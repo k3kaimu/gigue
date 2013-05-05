@@ -1,4 +1,4 @@
-﻿/**
+/**
 Boost::uBlas目指そうと思ったけどuBlasそんなに使ったことないし、
 じゃあ独自的な方向でいこうって感じのExpression Templateを使った行列ライブラリ。
 
@@ -31,19 +31,9 @@ slice!([r1, r2], [c1, c2]), sub!([r1, r2, r3], [r1, r2, r3, r4]), swizzle
 ETを使わない行列
 
 高速化とか
-・Blasいくか
-    asmかcore.simd.Vectorか外部ライブラリ(C)か。
-        外部ライブラリでよくね？自分がやっても遅いし、ユーザーが選択できるし。
-            それdbletじゃん…
-            じゃあlapackも選択制でいいのでは？version=UserLapackで、lapackを積極的に使うとか
-        blasを積極的に使う式テンプレートを使った行列型とか
-全要素一括評価：ETの中間オブジェクト云々の良い特徴が消える…？
-    A *= 2;だとそんなことは無いけど、ETじゃない。
-    A *= B;だと静的大きさでは無理。
-        というか外部のBLASを使う際の静的大きさであるメリットはない
+・Blas
 
 Bug:
-@safeと@systemの推論のバグ
 toString：コンパイルが終わらずメモリ馬鹿食いするバグ
 
 特定行列の最適化(identity * A == AとかA.transpose.transpose == A)
@@ -57,6 +47,7 @@ License: NYSL
 module extml.core;
 
 import std.algorithm,
+       std.conv,
        std.functional,
        std.range,
        std.traits,
@@ -67,13 +58,16 @@ version(unittest) import std.stdio;
 /**
 デフォルトでの行列が列優先か行優先のどちらでメモリ上に配置されるかをDlinearColumnMajorという
 */
+/*
 version(ExtmlColumnMajor)
     enum Major defaultMajor = Major.column;
 else
     enum Major defaultMajor = Major.row;
+*/
 
 //version(unittest) void main(){}
 
+enum size_t wild = 0;       ///動的行列とかそういうのでつかう
 
 /**
 四則演算が定義されている型。
@@ -82,36 +76,15 @@ inout(ubyte)からinout(creal)などまで。
 template isScalar(T){
     enum bool isScalar = is(typeof(
         {
-            T _;
-            T a = cast(T)1;
-            //a = cast(T)0;
-            //a = a;
-            
-            //a = -a;
-            //a = +a;
-            
-            //a += a;
-            //a -= a;
-            //a *= a;
-            //a /= a;
+            T* a;
 
-            //a += 1;
-            //a -= 1;
-            //a *= 1;
-            //a /= 1;
-
-            {auto _t1 = a + a;}
-            {auto _t1 = a - a;}
-            {auto _t1 = a * a;}
-            {auto _t1 = a / a;}
-
-            {auto _t1 = a + 1;}
-            {auto _t1 = a - 1;}
-            {auto _t1 = a * 1;}
-            {auto _t1 = a / 1;}
+            {auto _t1 = *a + *a;}
+            {auto _t1 = *a - *a;}
+            {auto _t1 = *a * *a;}
+            {auto _t1 = *a / *a;}
 
             //bool b = a < 0;
-            //bool b = a == 0;
+            bool b = *a == *a;
         }));
 }
 unittest{
@@ -148,59 +121,17 @@ enum Major{
 /**
 行列型か判定します。
 行列型Tは次のコードがコンパイル可能です。
-
----
-T m;
-
-enum rsize = T.rlength;
-enum csize = T.clength;
-
-static assert(rsize >= 0);
-static assert(csize >= 0);
-
-auto e = m[0, 0];
-static assert(isScalar!(typeof(e)));
-
-
-static if(rsize == 0 || csize == 0)
-{
-    alias Instance = T.Instantiate!(1, 1);
-    enum bool able = Instance.isValid;
-
-    static if(able)
-    {
-        enum size_t rlength = Instance.rlength;
-        enum size_t clength = Instance.clength;
-    }
-}
----
 */
 template isMatrix(T)
 {
     enum bool isMatrix = is(typeof({
             T m;
 
-            enum rsize = T.rlength;
-            enum csize = T.clength;
-
-            static assert(rsize >= 0);
-            static assert(csize >= 0);
+            size_t rsize = m.rlength;
+            size_t csize = m.clength;
 
             auto e = m[0, 0];
-            static assert(isScalar!(typeof(e)));
-
-
-            static if(rsize == 0 || csize == 0)
-            {
-                alias Instance = T.Instantiate!(1, 1);
-                enum bool able = Instance.isValid;
-
-                static if(able)
-                {
-                    enum size_t rlength = Instance.rlength;
-                    enum size_t clength = Instance.clength;
-                }
-            }
+            //static assert(isScalar!(typeof(e)));
         }));
 }
 unittest{
@@ -229,7 +160,7 @@ unittest{
         }
     }
 
-    static assert(!isMatrix!S);
+    static assert(isMatrix!S);
 }
 unittest{
     import std.bigint, std.typetuple;
@@ -239,290 +170,102 @@ unittest{
                           creal, cfloat, cdouble/*,*/
                           /*BigInt*/);
 
+    static struct M(T, size_t r, size_t c)
+    {
+        enum rlength = r;
+        enum clength = c;
+
+        auto opIndex(size_t i, size_t j){return T.init;}
+    }
+
     foreach(T; TT)
     {
-        static assert(isMatrix!(Matrix!(T, 3, 3)));
-        static assert(isMatrix!(Matrix!(const(T), 3, 3)));
-        static assert(isMatrix!(Matrix!(immutable(T), 3, 3)));
+        static assert(isMatrix!(M!(T, 3, 3)));
+        static assert(isMatrix!(M!(const(T), 3, 3)));
+        static assert(isMatrix!(M!(immutable(T), 3, 3)));
     }
 }
 
 
 /**
-静的な大きさが特に決まっていない行列をFlexibleMatrixとソースコード上では示しています。
+行のサイズが静的に決定されるか
 */
-enum FlexibleMatrix{
-    row,
-    column,
-    rowAndColumn,
-    any,
+template hasStaticRows(T)
+{
+    enum bool hasStaticRows = is(typeof({
+            enum rsize = T.rlength;
+            static assert(rsize > 0);
+        }));
 }
 
 
 /**
-フレキシブル行列型かどうか判定します。
-フレキシブル行列を導入することにより、たとえば単位行列などを抽象的に考えることができ、
-さらに、動的な大きさをもつ行列に対して、「どの大きさにもなり得る」という静的な大きさをもたせることができます。
-
-単位行列は、そのもの自身を考える際には、ただ「正方行列」であればよいので、
-フレキシブル行列型で表すことができ、次のような実装になります。
-
-Example:
----
-struct Identity(T)
-{
-    enum size_t rlength = 0;    ///行フレキシブル行列
-    enum size_t clength = 0;    ///列フレキシブル行列
-
-
-    ///行列型のプリミティブ
-    T opIndex(size_t i, size_t j) const {
-        return i == j ? 1 : 0;
-    }
-
-
-    ///フレキシブル行列のプリミティブ
-    ///意味は、「単位行列は正方行列でなければいけない」
-    ///0の場合はワイルドカードで、推論可能であれば推論するが、推論不可能なら推論しないで0にする。
-    static struct Instantiate(size_t i, size_t j)
-    {
-        static if(i == 0 && j != 0) //iのみがワイルドカード
-        {
-            enum isValid = true;    //iはjから推論可能
-            enum rlength = j;       //rlength = clength = j
-            enum clength = j;
-        }
-        else static if(j == 0 && i != 0) //上と逆
-        {
-            enum isValid = true;
-            enum rlength = i;
-            enum clength = i;
-        }
-        else                        //どちらもワイルドカードでない
-        {
-            enum isValid = i == j;  //i == jなら正方行列なので正当
-
-            static if(isValid)
-            {
-                enum rlength = i;   //正当な場合にはrlengthとclengthを宣言
-                enum clength = j;
-            }
-        }
-    }
-}
----
-
-
-列の大きさが動的な大きさを持つ行列は次のように表せます。
-
-Example:
----
-struct DynamicMatrix(T, size_t rsize)
-{
-    enum size_t rlength = rsize;
-    enum size_t clength = 0;
-
-
-    T opIndex(size_t i, size_t j) inout 
-    in{
-        assert(i < 3);
-        assert(3 * j + i < _mem.length);
-    }
-    body{
-        return _mem[3 * j + i];
-    }
-
-
-    static struct Instantiate(size_t r, size_t c)
-    {
-        static if(r == 0 || r == rsize){
-            enum isValid = true;
-            enum rlength = r;
-            enum clength = c;
-        }else
-            enum isValid = false;
-    }
-
-  private:
-    T[]
-}
----
+列のサイズが静的に決定されるか
 */
-template isFlexibleMatrix(T, FlexibleMatrix Type = FlexibleMatrix.any)
+template hasStaticColumns(T)
 {
-    static if(Type == FlexibleMatrix.any){
-        enum bool isFlexibleMatrix = isMatrix!T
-                                  && is(typeof({
-                                        static assert(T.rlength == 0 || T.clength == 0);
-                                        alias Instance = T.Instantiate!(1, 1);
-                                        enum bool able = Instance.isValid;
-
-                                        static if(able)
-                                        {
-                                            enum size_t rlength = Instance.rlength;
-                                            enum size_t clength = Instance.clength;
-                                        }
-                                    }));
-    }
-    else
-    {
-        static if(Type == FlexibleMatrix.rowAndColumn)
-            enum bool _isFlexibleMatrix = isMatrix!T && T.rlength == 0 && T.clength == 0;
-        else static if(Type == FlexibleMatrix.row)
-            enum bool _isFlexibleMatrix = isMatrix!T && T.rlength == 0;
-        else static if(Type == FlexibleMatrix.column)
-            enum bool _isFlexibleMatrix = isMatrix!T && T.clength == 0;
-
-        enum bool isFlexibleMatrix = _isFlexibleMatrix && is(typeof({
-                alias Instance = T.Instantiate!(1, 1);
-                enum bool able = Instance.isValid;
-                static if(able){
-                    enum size_t rlength = Instance.rlength;
-                    enum size_t clength = Instance.clength;
-                }
-            }));
-    }
-}
-unittest{
-    static struct S(size_t r, size_t c)
-    {
-        enum rlength = r;
-        enum clength = c;
-
-        int opIndex(size_t, size_t){
-            return 1;
-        }
-
-        static struct Instantiate(size_t i, size_t j)
-        {
-            static if(i == 0 && j != 0)
-            {
-                enum isValid = true;
-                enum rlength = j;
-                enum clength = j;
-            }
-            else static if(j == 0 && i != 0)
-            {
-                enum isValid = true;
-                enum rlength = i;
-                enum clength = i;
-            }
-            else
-            {
-                enum isValid = i == j;
-                
-                static if(isValid)
-                {
-                    enum rlength = i;
-                    enum clength = j;
-                }
-            }
-        }
-    }
-
-    static assert(isFlexibleMatrix!(S!(0, 0), FlexibleMatrix.rowAndColumn));
-    static assert(isFlexibleMatrix!(S!(0, 1), FlexibleMatrix.row));
-    static assert(isFlexibleMatrix!(S!(1, 0), FlexibleMatrix.column));
-
-    static assert(!isFlexibleMatrix!(S!(1, 1), FlexibleMatrix.row));
-    static assert(!isFlexibleMatrix!(S!(1, 1), FlexibleMatrix.column));
-    static assert(!isFlexibleMatrix!(S!(1, 1), FlexibleMatrix.rowAndColumn));
-}
-unittest{
-    static assert(isFlexibleMatrix!(typeof(identity!int)));
+    enum bool hasStaticColumns = is(typeof({
+            enum csize = T.clength;
+            static assert(csize > 0);
+        }));
 }
 
 
 /**
-フレキシブル行列のある大きさに対するインスタンスを生成します
+行のサイズが動的に変化する
 */
-auto instantiate(size_t r, size_t c, A)(A fmat)
-if(isFlexibleMatrix!(A, FlexibleMatrix.any) && A.Instantiate!(r, c).isValid)
+template hasDynamicRows(T)
 {
-    ///ditto
-    static struct FlexibleMatrixInstance()
-    {
-        A _fmat;
-
-        enum rlength = r;
-        enum clength = c;
-
-        auto ref opIndex(size_t i, size_t j)
-        in{
-            assert(i < rlength || rlength == 0);
-            assert(j < clength || clength == 0);
-        }
-        body{
-            return _fmat[i, j];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) const 
-        in{
-            assert(i < rlength || rlength == 0);
-            assert(j < clength || clength == 0);
-        }
-        body{
-            return _fmat[i, j];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) immutable
-        in{
-            assert(i < rlength || rlength == 0);
-            assert(j < clength || clength == 0);
-        }
-        body{
-            return _fmat[i, j];
-        }
-
-
-      mixin ExpressionTemplateOperators!(ETOSpec.all);
-
-      static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
-
-
-      static if(this.rlength == 0 || this.clength == 0)
-      {
-        static struct Instantiate(size_t R, size_t C)
-        {
-          private:
-            enum bool _isValid = isEqOrEitherEq0(FlexibleMatrixInstance.rlength, R)
-                              && isEqOrEitherEq0(FlexibleMatrixInstance.clength, C);
-
-            static if(_isValid)
-            {
-                enum size_t _rlength = max(FlexibleMatrixInstance.rlength, R);
-                enum size_t _clength = max(FlexibleMatrixInstance.clength, C);
-            }
-
-          public:
-            static if(_isValid)
-                enum bool isValid = A.Instantiate!(_rlength, _clength).isValid;
-            else
-                enum bool isValid = false;
-
-            static if(isValid)
-            {
-                enum size_t rlength = A.Instantiate!(_rlength, _clength).rlength;
-                enum size_t clength = A.Instantiate!(_rlength, _clength).clength;
-            }
-
-        }
-      }
-    }
-
-    return FlexibleMatrixInstance!()(fmat);
+    enum bool hasDynamicRows = !is(typeof({
+            enum rsize = T.rlength;
+        }));
 }
 
-unittest{
-    auto id = identity!int.instantiate!(3, 3);
-    static assert(id.rlength == 3);
-    static assert(id.clength == 3);
-    static assert(isMatrix!(typeof(id)));
 
-    assert(equal!"equal(a, b)"(id.toRange, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]));
+/**
+列のサイズが動的に変化する
+*/
+template hasDynamicColumns(T)
+{
+    enum bool hasDynamicColumns = !is(typeof({
+            enum csize = T.clength;
+        }));
+}
+
+
+/**
+
+*/
+struct InferredResult
+{
+    bool isValid;
+    size_t rlength;
+    size_t clength;
+}
+
+
+/**
+サイズが推論可能
+*/
+template isInferableMatrix(T)
+{
+    enum bool isInferableMatrix = isMatrix!T && is(typeof({
+            static assert(T.rlength == wild);
+            static assert(T.clength == wild);
+
+            enum InferredResult result = T.inferSize(wild, wild);
+
+            static if(result.isValid)
+            {
+                enum inferredRows = result.rlength;
+                enum inferredCols = result.clength;
+            }
+
+            enum someValue = 4; //非負の整数
+            static assert(!T.inferSize(wild, wild).isValid);
+            static assert(T.inferSize(wild, someValue).isValid);
+            static assert(T.inferSize(wild, someValue).isValid);
+        }));
 }
 
 
@@ -531,14 +274,20 @@ unittest{
 */
 template isVector(V)
 {
-    enum isVector = isMatrix!V
+    enum isVector = isMatrix!V && !isInferableMatrix!V
                  && is(typeof({
-                        static assert(V.rlength == 1 || V.clength == 1);
-
-                        enum len = V.length;
-                        static assert(len == V.rlength * V.clength);
+                        static if(hasStaticRows!V)
+                        {
+                            static if(hasStaticColumns!V)
+                                static assert(V.rlength == 1 || V.clength == 1);
+                            else
+                                static assert(V.rlength == 1);
+                        }
+                        else
+                            static assert(V.clength == 1);
 
                         V v;
+                        size_t size = v.length;
 
                         auto a = v[0, 0];
                         auto b = v[0];
@@ -546,10 +295,17 @@ template isVector(V)
                     }));
 }
 unittest{
-    static assert(isVector!(Rvector1ui));
-    static assert(isVector!(Rvector3ui));
-    static assert(isVector!(Cvector1ui));
-    static assert(isVector!(Cvector3ui));
+    static struct V
+    {
+        enum rlength = 1;
+        enum clength = 3;
+        enum length = 3;
+
+        auto opIndex(size_t i, size_t j){return j;}
+        auto opIndex(size_t i){return i;}
+    }
+
+    static assert(isVector!V);
 }
 
 
@@ -561,7 +317,7 @@ Example:
 static assert(is(ElementType!(NMatrix2S!int) == int));
 ---
 */
-template ElementType(A)if(isMatrix!A)
+template ElementType(A) if(isMatrix!A)
 {
     alias typeof(A.init[0, 0]) ElementType;
 }
@@ -599,9 +355,6 @@ template hasLvalueElements(A)if(isMatrix!A)
         }));
 }
 unittest{
-    static assert(hasLvalueElements!(Matrix3i));
-}
-unittest{
     static struct M
     {
         enum rlength = 1;
@@ -633,9 +386,6 @@ template hasAssignableElements(A)if(isMatrix!A)
             A a;
             a[0, 0] = e;
         }));
-}
-unittest{
-    static assert(hasAssignableElements!(Matrix3i));
 }
 unittest{
     static struct M
@@ -679,295 +429,182 @@ unittest{
 }
 
 
-/**
-その2項演算子が正しいかどうかを判定します。
 
-Example:
----
-unittest{
-    static assert(isValidOperator!(Matrix1x1i, "*", Matrix1x1f));
-    static assert(isValidOperator!(Matrix2x1i, "*", Matrix1x2f));
-    static assert(isValidOperator!(Matrix1x2i, "*", Matrix2x1f));
-    static assert(!isValidOperator!(Matrix1x2i, "*", Matrix1x2f));
-}
-unittest{
-    static assert(isValidOperator!(Matrix1x1i, "+", Matrix1x1f));
-    static assert(!isValidOperator!(Matrix2x1i, "+", Matrix1x2f));
-    static assert(!isValidOperator!(Matrix1x2i, "+", Matrix2x1f));
-    static assert(isValidOperator!(Matrix1x2i, "+", Matrix1x2f));
-}
-unittest{
-    static assert(isValidOperator!(Matrix1x1i, "-", Matrix1x1f));
-    static assert(!isValidOperator!(Matrix2x1i, "-", Matrix1x2f));
-    static assert(!isValidOperator!(Matrix1x2i, "-", Matrix2x1f));
-    static assert(isValidOperator!(Matrix1x2i, "-", Matrix1x2f));
-}
-unittest{
-    static assert(!isValidOperator!(int, "-", Matrix1x1f));
-    static assert(!isValidOperator!(int, "+", Matrix1x2f));
-    static assert(isValidOperator!(int, "*", Matrix2x1f));
-    static assert(!isValidOperator!(Matrix2x1i, "-", creal));
-    static assert(!isValidOperator!(Matrix1x2i, "+", creal));
-    static assert(isValidOperator!(Matrix1x2i, "*", creal));
-}
----
+/**
+
 */
 template isValidOperator(L, string op, R)
 {
-    static assert(isScalar!L || isMatrix!L);
-    static assert(isScalar!R || isMatrix!R);
-    static assert(isMatrix!L || isMatrix!R);
-
-    static if(isMatrix!L)
-    {
-        static if(isMatrix!R)
-        {
-            static if(isFlexibleMatrix!(L) && isFlexibleMatrix!(R))
-            {
-                static if(op == "+" || op == "-")
-                    enum bool _isValidOperator = is(typeof({
-                                                        alias LI1 = L.Instantiate!(R.rlength, R.clength);
-                                                        static assert(LI1.isValid);
-
-                                                        alias RI1 = R.Instantiate!(LI1.rlength, LI1.clength);
-                                                        static assert(RI1.isValid);
-
-                                                        alias LI2 = L.Instantiate!(RI1.rlength, RI1.clength);
-                                                        static assert(LI2.isValid);
-                                                    }));
-                else static if(op == "*")
-                {
-                    static if(L.clength == 0 && R.rlength == 0)
-                    {
-                        //pragma(msg, "ColumnFlexibleMatrix * RowFlexibleMatrix() cannot instantiate.");
-                        //pragma(msg, "Please use FlexibleMatrix.instantiate!(r, c)");
-                        enum bool _isValidOperator = false;
-                    }
-                    else static if(L.clength == 0)
-                    {
-                        enum bool _isValidOperator = L.Instantiate!(0, R.rlength).isValid;
-                    }
-                    else static if(R.rlength == 0)
-                    {
-                        enum bool _isValidOperator = R.Instantiate!(L.clength, 0).isValid;
-                    }
-                    else
-                    {
-                        //pragma(msg, "Invalid case.");
-                        static assert(0);
-                    }
-                }
-                else
-                    enum bool _isValidOperator = false;
-            }
-            else static if(isFlexibleMatrix!(L))
-            {
-                static if(op == "+" || op == "-")
-                    enum bool _isValidOperator = L.Instantiate!(R.rlength, R.clength).isValid
-                                              && is(typeof({
-                                                    static assert(isEqOrEitherEq0(L.Instantiate!(R.rlength, R.clength).rlength, R.rlength));
-                                                    static assert(isEqOrEitherEq0(L.Instantiate!(R.rlength, R.clength).clength, R.clength));
-                                                }));
-                else static if(op == "*")
-                    enum bool _isValidOperator = L.Instantiate!(0, R.rlength).isValid
-                                             && is(typeof({
-                                                    static assert(isEqOrEitherEq0(L.Instantiate!(0, R.rlength).clength, R.rlength));
-                                                }));
-                else
-                    enum bool _isValidOperator = false;
-            }
-            else static if(isFlexibleMatrix!(R))
-            {
-                static if(op == "+" || op == "-")
-                    enum bool _isValidOperator = R.Instantiate!(L.rlength, L.clength).isValid
-                                             && is(typeof({
-                                                    static assert(isEqOrEitherEq0(R.Instantiate!(L.rlength, L.clength).rlength, L.rlength));
-                                                    static assert(isEqOrEitherEq0(R.Instantiate!(L.rlength, L.clength).clength, L.clength));
-                                                }));
-                else static if(op == "*")
-                    enum bool _isValidOperator = R.Instantiate!(L.clength, 0).isValid
-                                              && is(typeof({
-                                                    static assert(isEqOrEitherEq0(R.Instantiate!(L.clength, 0).rlength, L.clength));
-                                                }));
-                else
-                    enum bool _isValidOperator = false;
-            }
-            else
-            {
-                static if(op == "+" || op == "-")
-                    enum bool _isValidOperator = L.rlength == R.rlength
-                                              && L.clength == R.clength;
-                else static if(op == "*")
-                    enum bool _isValidOperator = L.clength == R.rlength;
-                else
-                    enum bool _isValidOperator = false;
-            }
-
-            enum bool isValidOperator = is(typeof(mixin("L.init[0, 0] " ~ op ~ "R.init[0, 0]")))
-                                     && _isValidOperator;
-        }else
-            enum bool isValidOperator = op == "*" && is(typeof(mixin("L.init[0, 0] " ~ op ~ "R.init")));
-    }
-    else
-    { // isScalar
-        //static assert(isMatrix!R);
-        enum bool isValidOperator = op == "*" && is(typeof(mixin("L.init " ~ op ~ " R.init[0, 0]")));
-    }
-}
-unittest{
-    static assert(isValidOperator!(Matrix1x1i,  "*", Matrix1x1f));
-    static assert(isValidOperator!(Matrix2x1i,  "*", Matrix1x2f));
-    static assert(isValidOperator!(Matrix1x2i,  "*", Matrix2x1f));
-    static assert(!isValidOperator!(Matrix1x2i, "*", Matrix1x2f));
-}
-unittest{
-    static assert(isValidOperator!(Matrix1x1i,  "+", Matrix1x1f));
-    static assert(!isValidOperator!(Matrix2x1i, "+", Matrix1x2f));
-    static assert(!isValidOperator!(Matrix1x2i, "+", Matrix2x1f));
-    static assert(isValidOperator!(Matrix1x2i,  "+", Matrix1x2f));
-}
-unittest{
-    static assert(isValidOperator!(Matrix1x1i,  "-", Matrix1x1f));
-    static assert(!isValidOperator!(Matrix2x1i, "-", Matrix1x2f));
-    static assert(!isValidOperator!(Matrix1x2i, "-", Matrix2x1f));
-    static assert(isValidOperator!(Matrix1x2i,  "-", Matrix1x2f));
-}
-unittest{
-    static assert(!isValidOperator!(int, "-", Matrix1x1f));
-    static assert(!isValidOperator!(int, "+", Matrix1x2f));
-    static assert(isValidOperator!(int,  "*", Matrix2x1f));
-    static assert(!isValidOperator!(Matrix2x1i, "-", creal));
-    static assert(!isValidOperator!(Matrix1x2i, "+", creal));
-    static assert(isValidOperator!(Matrix1x2i,  "*", creal));
-}
-unittest{
-    static assert(isValidOperator!(typeof(identity!int),  "+", Matrix1x1f));
-    static assert(!isValidOperator!(typeof(identity!int), "+", Matrix1x2f));
-    static assert(!isValidOperator!(typeof(identity!int), "+", Matrix2x1f));
-    static assert(isValidOperator!(typeof(identity!int),  "+", Matrix2x2f));
-
-    static assert(isValidOperator!(typeof(identity!int),  "-", Matrix1x1f));
-    static assert(!isValidOperator!(typeof(identity!int), "-", Matrix1x2f));
-    static assert(!isValidOperator!(typeof(identity!int), "-", Matrix2x1f));
-    static assert(isValidOperator!(typeof(identity!int),  "-", Matrix2x2f));
-
-    static assert(isValidOperator!(typeof(identity!int),  "*", Matrix1x1f));
-    static assert(isValidOperator!(typeof(identity!int),  "*", Matrix1x2f));
-    static assert(isValidOperator!(typeof(identity!int),  "*", Matrix2x1f));
-    static assert(isValidOperator!(typeof(identity!int),  "*", Matrix2x2f));
+    static if(isMatrix!L && isMatrix!R)
+        enum isValidOperator = is(typeof(mixin("L.init[0, 0] " ~ op ~ " R.init[0, 0]"))) && isValidOperatorImpl!(L, op, R);
+    else static if(isMatrix!L)
+        enum isValidOperator = is(typeof(mixin("L.init[0, 0] " ~ op ~ " R.init"))) && isValidOperatorImpl!(L, op, R);
+    else static if(isMatrix!R)
+        enum isValidOperator = is(typeof(mixin("L.init " ~ op ~ " R.init[0, 0]"))) && isValidOperatorImpl!(L, op, R);
 }
 
 
-/**
-二項演算子での結果を調べます。
-
-Example:
----
-alias Result!(Matrix2x1i, "*", Matrix1x2f) R;
-static assert(R.rlength == 1);
-static assert(R.clength == 1);
----
-*/
-template ResultSize(L, string op, R)if(isValidOperator!(L, op, R))
+template isValidOperatorImpl(L, string op, R)
+if(isMatrix!L && isMatrix!R && op != "*")
 {
-    static assert(isScalar!L || isMatrix!L);
-    static assert(isScalar!R || isMatrix!R);
-    static assert(isMatrix!L || isMatrix!R);
-
-    static if(isMatrix!L)
+    static if(op != "+" && op != "-")
+        enum isValidOperatorImpl = false;
+    else static if(isInferableMatrix!L && isInferableMatrix!R)
+        enum isValidOperatorImpl = true;
+    else static if(isInferableMatrix!L)
     {
-        static if(isMatrix!R)
+        static if(hasStaticRows!R)
+            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, R.rlength, wild), op, R);
+        else static if(hasStaticColumns!R)
+            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, wild, R.clength), op, R);
+        else
+            enum isValidOperatorImpl = true;
+    }
+    else static if(isInferableMatrix!R)
+        enum isValidOperatorImpl = isValidOperatorImpl!(R, op, L);
+    else
+    {
+        static if(hasStaticRows!L)
         {
-            static if(isFlexibleMatrix!L && isFlexibleMatrix!R)
-            {
-                static if(op == "+" || op == "-")
-                {
-                    enum rlength = max(L.rlength, R.rlength);
-                    enum clength = max(L.clength, R.clength);
-                }
-                else static if(op == "*")
-                {
-                    /*
-                    static if(L.clength == 0 && R.rlength == 0)
-                    {}
-                    else */static if(L.clength == 0)
-                    {
-                        enum rlength = L.Instantiate!(0, R.rlength).rlength;
-                        enum clength = R.Instantiate!(R.rlength, 0).clength;
-                    }
-                    else static if(R.rlength == 0)
-                    {
-                        enum rlength = L.Instantiate!(0, L.clength).rlength;
-                        enum clength = R.Instantiate!(L.clength, 0).clength;
-                    }
-                }
-            }
-            else static if(isFlexibleMatrix!L)
-            {
-                static if(op == "+" || op == "-")
-                {
-                    enum rlength = R.rlength;
-                    enum clength = R.clength;
-                }
-                else static if(op == "*")
-                {
-                    enum rlength = L.Instantiate!(0, R.rlength).rlength;
-                    enum clength = R.clength;
-                }
-            }
-            else static if(isFlexibleMatrix!R)
-            {
-                static if(op == "+" || op == "-")
-                {
-                    enum rlength = L.rlength;
-                    enum clength = L.clength;
-                }
-                else static if(op == "*")
-                {
-                    enum rlength = L.rlength;
-                    enum clength = R.Instantiate!(L.clength, 0).clength;
-                }
-            }
+            static if(hasStaticRows!R)
+                enum _isValidR = L.rlength == R.rlength;
             else
-            {
-                enum rlength = L.rlength;
-                enum clength = R.clength;
-            }
+                enum _isValidR = true;
         }
         else
+            enum _isValidR = true;
+
+        static if(hasStaticColumns!L)
         {
-            alias typeof(mixin("L.init[0, 0]" ~ op ~ "R.init")) ElementType;
-            enum rlength = L.rlength;
-            enum clength = L.clength;
+            static if(hasStaticColumns!R)
+                enum _isValidC = L.clength == R.clength;
+            else
+                enum _isValidC = true;
         }
+        else
+            enum _isValidC = true;
+
+        enum isValidOperatorImpl = _isValidR && _isValidC;
+    }
+
+
+    struct Inferred(M, size_t r, size_t c)
+    if(r == wild || c == wild)
+    {
+        enum size_t rlength = M.inferSize(r, c).rlength;
+        enum size_t clength = M.inferSize(r, c).clength;
+
+        auto opIndex(size_t i, size_t j){ return M.init[i, j]; }
+    }
+}
+
+
+template isValidOperatorImpl(L, string op, R)
+if(isMatrix!L && isMatrix!R && op == "*")
+{
+    struct Inferred(M, size_t r, size_t c)
+    if(r == wild || c == wild)
+    {
+        enum size_t rlength = M.inferSize(r, c).rlength;
+        enum size_t clength = M.inferSize(r, c).clength;
+
+        auto opIndex(size_t i, size_t j){ return M.init[i, j]; }
+    }
+
+
+    static if(isInferableMatrix!L && isInferableMatrix!R)
+        enum isValidOperatorImpl = false;
+    else static if(isInferableMatrix!L)
+    {
+        static if(hasStaticRows!R)
+            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, wild, R.rlength), op, R);
+        else
+            enum isValidOperatorImpl = true;
+    }
+    else static if(isInferableMatrix!R)
+    {
+        static if(hasStaticColumns!L)
+            enum isValidOperatorImpl = isValidOperatorImpl!(L, op, Inferred!(R, L.clength, wild));
+        else
+            enum isValidOperatorImpl = true;
     }
     else
     {
-        alias typeof(mixin("L.init" ~ op ~ "R.init[0, 0]")) ElementType;
-        enum rlength = R.rlength;
-        enum clength = R.clength;
+        static if(hasStaticColumns!L && hasStaticRows!R)
+            enum isValidOperatorImpl = L.clength == R.rlength;
+        else
+            enum isValidOperatorImpl = true;
     }
 }
-unittest{
-    alias ResultSize!(Matrix1x2i, "*", Matrix2x1i) R;
-    static assert(R.rlength == 1);
-    static assert(R.clength == 1);
+
+
+template isValidOperatorImpl(L, string op, R)
+if((isMatrix!L && !isMatrix!R) || (isMatrix!R && !isMatrix!L))
+{
+    static if(op != "+" && op != "-" && op != "*" && op != "/")
+        enum isValidOperatorImpl = false;
+    else
+        enum isValidOperatorImpl = true;
 }
+
+
 unittest{
-    alias ResultSize!(Matrix2x1i, "*", Matrix1x2f) R;
-    static assert(R.rlength == 2);
-    static assert(R.clength == 2);
-}
-unittest{
-    alias I = typeof(identity!int);
-    alias ResultSize!(I, "+", I) R;
-    static assert(R.rlength == 0);
-    static assert(R.clength == 0);
-}
-unittest{
-    alias ResultSize!(typeof(identity!int.instantiate!(0, 2)), "*", typeof(identity!int)) R;
-    static assert(R.rlength == 2);
-    static assert(R.clength == 2);
+    static struct S(T, size_t r, size_t c){enum rlength = r; enum clength = c; T opIndex(size_t i, size_t j){return T.init;}}
+    alias Static1x1 = S!(int, 1, 1);
+    alias Static1x2 = S!(int, 1, 2);
+    alias Static2x1 = S!(int, 2, 1);
+    alias Static2x2 = S!(int, 2, 2);
+
+    static struct D(T){size_t rlength = 1, clength = 1; T opIndex(size_t i, size_t j){return T.init;}}
+    alias Dynamic = D!(int);
+
+    static struct I(T){
+        enum rlength = 0, clength = 0;
+        T opIndex(size_t i, size_t j){return T.init;}
+        static InferredResult inferSize(size_t rlen, size_t clen){
+            if(isEqOrEitherEq0(rlen, clen) && (rlen != 0 || clen != 0))
+                return InferredResult(true, max(rlen, clen), max(rlen, clen));
+            else
+                return InferredResult(false, 0, 0);
+        }
+    }
+    alias Inferable = I!int;
+    static assert(Inferable.inferSize(1, 0).isValid);
+
+    alias T = Inferable;
+    static assert(T.rlength == wild);
+    static assert(T.clength == wild);
+
+
+    static assert( isValidOperator!(Static1x1, "+", Static1x1));
+    static assert(!isValidOperator!(Static1x1, "+", Static1x2));
+    static assert( isValidOperator!(Static1x2, "+", Static1x2));
+    static assert(!isValidOperator!(Static1x2, "+", Static1x1));
+
+    static assert( isValidOperator!(Static1x1, "+", Dynamic));
+    static assert( isValidOperator!(Static1x2, "+", Dynamic));
+    static assert( isValidOperator!(Dynamic, "+", Static1x1));
+    static assert( isValidOperator!(Dynamic, "+", Static1x2));
+
+    static assert( isValidOperator!(Static1x1, "+", Inferable));
+    static assert(!isValidOperator!(Static1x2, "+", Inferable));
+    static assert( isValidOperator!(Inferable, "+", Static1x1));
+    static assert(!isValidOperator!(Inferable, "+", Static1x2));
+
+    static assert( isValidOperator!(Static1x1, "*", Static1x1));
+    static assert( isValidOperator!(Static1x1, "*", Static1x2));
+    static assert(!isValidOperator!(Static1x2, "*", Static1x2));
+    static assert(!isValidOperator!(Static1x2, "*", Static1x1));
+
+    static assert( isValidOperator!(Static1x1, "*", Dynamic));
+    static assert( isValidOperator!(Static1x2, "*", Dynamic));
+    static assert( isValidOperator!(Dynamic, "*", Static1x1));
+    static assert( isValidOperator!(Dynamic, "*", Static1x2));
+
+    static assert( isValidOperator!(Static1x1, "*", Inferable));
+    static assert( isValidOperator!(Static1x2, "*", Inferable));
+    static assert( isValidOperator!(Inferable, "*", Static1x1));
+    static assert( isValidOperator!(Inferable, "*", Static1x2));
 }
 
 
@@ -978,10 +615,17 @@ enum ETOSpec{
     matrixAddMatrix = (1 << 0),
     matrixSubMatrix = (1 << 1),
     matrixMulMatrix = (1 << 2),
-    matrixMulScalar = (1 << 3),
-    scalarMulMatrix = (1 << 4),
-    matrixEquMatrix = (1 << 5),
-    all = (1 << 6) -1,
+    matrixAddScalar = (1 << 3),
+    scalarAddMatrix = (1 << 4),
+    matrixSubScalar = (1 << 5),
+    scalarSubMatrix = (1 << 6),
+    matrixMulScalar = (1 << 7),
+    scalarMulMatrix = (1 << 8),
+    matrixDivScalar = (1 << 9),
+    scalarDivMatrix = (1 << 10),
+    opEquals = (1 << 11),
+    toString = (1 << 12),
+    all = (1 << 13) -1,
 }
 
 
@@ -1000,47 +644,292 @@ static assert(ETOperatorSpec!(int, "*", Matrix1x2i) == ETOSpec.scalarMulMatrix);
 template ETOperatorSpec(A, string op, B)
 if(isValidOperator!(A, op, B))
 {
-    static if(op == "+")
-        enum ETOSpec ETOperatorSpec = ETOSpec.matrixAddMatrix;
-    else static if(op == "-")
-        enum ETOSpec ETOperatorSpec = ETOSpec.matrixSubMatrix;
-    else static if(op == "*")
-    {
-        static if(isMatrix!A)
-        {
-            static if(isMatrix!B)
-                enum ETOSpec ETOperatorSpec = ETOSpec.matrixMulMatrix;
-            else
-                enum ETOSpec ETOperatorSpec = ETOSpec.matrixMulScalar;
-        }else
-            enum ETOSpec ETOperatorSpec = ETOSpec.scalarMulMatrix;
-    }
+    static if(isMatrix!A && isMatrix!B)
+        enum ETOSpec ETOperatorSpec = op == "+" ? ETOSpec.matrixAddMatrix
+                                                : (op == "-" ? ETOSpec.matrixSubMatrix
+                                                             : ETOSpec.matrixMulMatrix);
+    else static if(isScalar!A)
+        enum ETOSpec ETOperatorSpec = op == "+" ? ETOSpec.scalarAddMatrix
+                                                : (op == "-" ? ETOSpec.scalarSubMatrix
+                                                             : (op == "*" ? ETOSpec.scalarMulMatrix
+                                                                          : ETOSpec.scalarDivMatrix));
+    else
+        enum ETOSpec ETOperatorSpec = op == "+" ? ETOSpec.matrixAddScalar
+                                                : (op == "-" ? ETOSpec.matrixSubScalar
+                                                             : (op == "*" ? ETOSpec.matrixMulScalar
+                                                                          : ETOSpec.matrixDivScalar));
 }
 unittest{
+    static struct S(T, size_t r, size_t c){enum rlength = r; enum clength = c; T opIndex(size_t i, size_t j){return T.init;}}
+    alias Matrix2i = S!(int, 2, 2);
+
     static assert(ETOperatorSpec!(Matrix2i, "+", Matrix2i) == ETOSpec.matrixAddMatrix);
     static assert(ETOperatorSpec!(Matrix2i, "-", Matrix2i) == ETOSpec.matrixSubMatrix);
     static assert(ETOperatorSpec!(Matrix2i, "*", Matrix2i) == ETOSpec.matrixMulMatrix);
     static assert(ETOperatorSpec!(Matrix2i, "*", int) == ETOSpec.matrixMulScalar);
-    static assert(ETOperatorSpec!(int, "*", Matrix1x2i) == ETOSpec.scalarMulMatrix);
+    static assert(ETOperatorSpec!(int, "*", Matrix2i) == ETOSpec.scalarMulMatrix);
 }
 
 
+/**
 
-///ditto
-struct MatrixOperator(string s, A, B)
+*/
+struct MatrixExpression(Lhs, string s, Rhs)
+if(isValidOperator!(Lhs, s, Rhs) && (isInferableMatrix!Lhs && isInferableMatrix!Rhs) || (isInferableMatrix!Lhs && !isMatrix!Rhs) || (!isMatrix!Lhs && isInferableMatrix!Rhs))
 {
-    enum size_t rlength = ResultSize!(A, s, B).rlength;
-    enum size_t clength = ResultSize!(A, s, B).clength;
-    enum ETOSpec etoSpec = ETOperatorSpec!(A, s, B);
+    enum rlength = wild;
+    enum clength = wild;
+    enum etoSpec = ETOperatorSpec!(Lhs, s, Rhs);
 
-    A lhs;
-    B rhs;
+
+    static InferredResult inferSize(size_t r, size_t c)
+    {
+        static if(isInferableMatrix!Lhs && isInferableMatrix!Rhs)
+        {
+            static assert(s != "*");
+            auto rLhs = Lhs.inferSize(r, c);
+            auto rRhs = Rhs.inferSize(r, c);
+
+            bool b = rLhs.isValid && rRhs.isValid && rLhs.rlength == rRhs.rlength && rLhs.clength == rRhs.clength;
+            return InferredResult(b, rLhs.rlength, rLhs.clength);
+        }
+        else static if(isInferableMatrix!Lhs)
+            return Lhs.inferSize(r, c);
+        else
+            return Rhs.inferSize(r, c);
+    }
+
+
+    auto ref opIndex(size_t i, size_t j)
+    {
+      static if(etoSpec == ETOSpec.matrixAddMatrix)
+        return this.lhs[i, j] + this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixSubMatrix)
+        return this.lhs[i, j] - this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixMulMatrix)
+      {
+        static assert(0);
+        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
+      }
+      else
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
+    }
+
+
+    auto ref opIndex(size_t i, size_t j) const 
+    {
+      static if(etoSpec == ETOSpec.matrixAddMatrix)
+        return this.lhs[i, j] + this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixSubMatrix)
+        return this.lhs[i, j] - this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixMulMatrix)
+      {
+        static assert(0);
+        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
+      }
+      else
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
+    }
+
+
+    auto ref opIndex(size_t i, size_t j) immutable
+    {
+      static if(etoSpec == ETOSpec.matrixAddMatrix)
+        return this.lhs[i, j] + this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixSubMatrix)
+        return this.lhs[i, j] - this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixMulMatrix)
+      {
+        static assert(0);
+        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
+      }
+      else
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
+    }
+
+
+    mixin(defaultExprOps(wild, wild, true));
+
+  private:
+    Lhs lhs;
+    Rhs rhs;
+}
+
+
+struct MatrixExpression(Lhs, string s, Rhs)
+if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatrix!Rhs) || (isInferableMatrix!Lhs && !isMatrix!Rhs) || (!isMatrix!Lhs && isInferableMatrix!Rhs)))
+{
+    enum etoSpec = ETOperatorSpec!(Lhs, s, Rhs);
+
+    static if(isMatrix!Lhs && isMatrix!Rhs)
+    {
+        static if(s == "*")
+        {
+            static if(hasStaticRows!Lhs)
+            {
+                enum rlength = Lhs.rlength;
+                private enum staticRLength = rlength;
+            }
+            else static if(isInferableMatrix!Lhs && hasStaticRows!Rhs)
+            {
+                enum rlength = Lhs.inferSize(wild, Rhs.rlength).rlength;
+                private enum staticRLength = rlength;
+            }
+            else static if(hasDynamicRows!Lhs)
+            {
+                @property size_t rlength() const { return this.lhs.rlength; }
+                private enum staticRLength = wild;
+            }
+            else static if(isInferableMatrix!Lhs && hasDynamicRows!Rhs)
+            {
+                @property size_t rlength() const { return this.lhs.inferSize(wild, rhs.rlength).rlength; }
+                private enum staticRLength = wild;
+            }
+            else
+                static assert(0);
+
+
+            static if(hasStaticColumns!Rhs)
+            {
+                enum clength = Rhs.clength;
+                private enum staticCLength = clength;
+            }
+            else static if(isInferableMatrix!Rhs && hasStaticColumns!Lhs)
+            {
+                enum clength = Rhs.inferSize(Lhs.clength, wild).clength;
+                private enum staticCLength = clength;
+            }
+            else static if(hasDynamicRows!Rhs)
+            {
+                @property size_t clength() const { return this.rhs.clength; }
+                private enum staticCLength = wild;
+            }
+            else static if(isInferableMatrix!Rhs && hasDynamicColumns!Lhs)
+            {
+                @property size_t clength() const { return this.rhs.inferSize(lhs.clength, wild).clength; }
+                private enum staticCLength = wild;
+            }
+            else
+                static assert(0);
+        }
+        else
+        {
+            static if(hasStaticRows!Lhs)
+            {
+                enum rlength = Lhs.rlength;
+                private enum staticRLength = rlength;
+            }
+            else static if(hasStaticRows!Rhs)
+            {
+                enum rlength = Rhs.rlength;
+                private enum staticRLength = rlength;
+            }
+            else static if(hasDynamicRows!Lhs)
+            {
+                @property size_t rlength() const { return this.lhs.rlength; }
+                private enum staticRLength = wild;
+            }
+            else
+            {
+                @property size_t rlength() const { return this.rhs.rlength; }
+                private enum staticRLength = wild;
+            }
+
+            static if(hasStaticColumns!Lhs)
+            {
+                enum clength = Lhs.clength;
+                private enum staticCLength = clength;
+            }
+            else static if(hasStaticColumns!Rhs)
+            {
+                enum clength = Rhs.clength;
+                private enum staticCLength = clength;
+            }
+            else static if(hasDynamicColumns!Lhs)
+            {
+                @property size_t clength() const { return this.lhs.clength; }
+                private enum staticCLength = wild;
+            }
+            else
+            {
+                @property size_t clength() const { return this.rhs.clength; }
+                private enum staticCLength = wild;
+            }
+        }
+    }
+    else static if(isMatrix!Lhs)
+    {
+        static assert(!isInferableMatrix!Lhs);
+
+        static if(hasStaticRows!Lhs)
+        {
+            enum rlength = Lhs.rlength;
+            private enum staticRLength = rlength;
+        }
+        else
+        {
+            @property size_t rlength() const { return this.lhs.rlength; }
+            private enum staticRLength = wild;
+        }
+
+        static if(hasStaticColumns!Lhs)
+        {
+            enum clength = Lhs.clength;
+            private enum staticCLength = clength;
+        }
+        else
+        {
+            @property size_t clength() const { return this.lhs.clength; }
+            private enum staticCLength = wild;
+        }
+    }
+    else
+    {
+        static assert(!isInferableMatrix!Rhs);
+
+        static if(hasStaticRows!Rhs)
+        {
+            enum rlength = Rhs.rlength;
+            private enum staticRLenght = rlength;
+        }
+        else
+        {
+            @property size_t rlength() const { return this.rhs.rlength; }
+            private enum staticRLenght = wild;
+        }
+
+        static if(hasStaticColumns!Rhs)
+        {
+            enum clength = Rhs.clength;
+            private enum staticCLenght = clength;
+        }
+        else
+        {
+            @property size_t clength() const { return this.rhs.clength; }
+            private enum staticCLenght = wild;
+        }
+    }
 
 
     auto ref opIndex(size_t i, size_t j)
     in{
-        assert(i < rlength || rlength == 0);
-        assert(j < clength || clength == 0);
+        assert(i < this.rlength);
+        assert(j < this.clength);
     }
     body{
       static if(etoSpec == ETOSpec.matrixAddMatrix)
@@ -1049,23 +938,35 @@ struct MatrixOperator(string s, A, B)
         return this.lhs[i, j] - this.rhs[i, j];
       else static if(etoSpec == ETOSpec.matrixMulMatrix)
       {
-        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = cast(Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])))0;
-        foreach(k; 0 .. A.clength)
+        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = 0;
+
+        static if(hasStaticColumns!Lhs)
+            immutable cnt = Lhs.clength;
+        else static if(hasStaticRows!Rhs)
+            immutable cnt = Rhs.rlength;
+        else static if(hasDynamicColumns!Lhs)
+            immutable cnt = this.lhs.clength;
+        else
+            immutable cnt = this.rhs.rlength;
+
+        foreach(k; 0 .. cnt)
             sum += this.lhs[i, k] * this.rhs[k, j];
         return sum;
-      }else static if(etoSpec == ETOSpec.matrixMulScalar)
-        return this.lhs[i, j] * this.rhs;
-      else static if(etoSpec == ETOSpec.scalarMulMatrix)
-        return this.lhs * this.rhs[i, j];
+      }
       else
-        static assert(0);
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
     }
 
 
     auto ref opIndex(size_t i, size_t j) const 
     in{
-        assert(i < rlength || rlength == 0);
-        assert(j < clength || clength == 0);
+        assert(i < this.rlength);
+        assert(j < this.clength);
     }
     body{
       static if(etoSpec == ETOSpec.matrixAddMatrix)
@@ -1074,23 +975,35 @@ struct MatrixOperator(string s, A, B)
         return this.lhs[i, j] - this.rhs[i, j];
       else static if(etoSpec == ETOSpec.matrixMulMatrix)
       {
-        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = cast(Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])))0;
-        foreach(k; 0 .. A.clength)
+        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = 0;
+
+        static if(hasStaticColumns!Lhs)
+            immutable cnt = Lhs.clength;
+        else static if(hasStaticRows!Rhs)
+            immutable cnt = Rhs.rlength;
+        else static if(hasDynamicColumns!Lhs)
+            immutable cnt = this.lhs.clength;
+        else
+            immutable cnt = this.rhs.rlength;
+
+        foreach(k; 0 .. cnt)
             sum += this.lhs[i, k] * this.rhs[k, j];
         return sum;
-      }else static if(etoSpec == ETOSpec.matrixMulScalar)
-        return this.lhs[i, j] * this.rhs;
-      else static if(etoSpec == ETOSpec.scalarMulMatrix)
-        return this.lhs * this.rhs[i, j];
+      }
       else
-        static assert(0);
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
     }
 
 
     auto ref opIndex(size_t i, size_t j) immutable
     in{
-        assert(i < rlength || rlength == 0);
-        assert(j < clength || clength == 0);
+        assert(i < this.rlength);
+        assert(j < this.clength);
     }
     body{
       static if(etoSpec == ETOSpec.matrixAddMatrix)
@@ -1099,176 +1012,46 @@ struct MatrixOperator(string s, A, B)
         return this.lhs[i, j] - this.rhs[i, j];
       else static if(etoSpec == ETOSpec.matrixMulMatrix)
       {
-        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = cast(Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])))0;
-        foreach(k; 0 .. A.clength)
+        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = 0;
+
+        static if(hasStaticColumns!Lhs)
+            immutable cnt = Lhs.clength;
+        else static if(hasStaticRows!Rhs)
+            immutable cnt = Rhs.rlength;
+        else static if(hasDynamicColumns!Lhs)
+            immutable cnt = this.lhs.clength;
+        else
+            immutable cnt = this.rhs.rlength;
+
+        foreach(k; 0 .. cnt)
             sum += this.lhs[i, k] * this.rhs[k, j];
         return sum;
-      }else static if(etoSpec == ETOSpec.matrixMulScalar)
-        return this.lhs[i, j] * this.rhs;
-      else static if(etoSpec == ETOSpec.scalarMulMatrix)
-        return this.lhs * this.rhs[i, j];
+      }
       else
-        static assert(0);
-    }
-
-
-
-  static if(this.rlength == 0 || this.clength == 0)
-  {
-    static struct Instantiate(size_t r, size_t c)
-    if(etoSpec == ETOSpec.matrixAddMatrix || etoSpec == ETOSpec.matrixSubMatrix)
-    {
-        static assert(isFlexibleMatrix!A && isFlexibleMatrix!B);    //どっちもFM
-      private:
-        alias AI = A.Instantiate!(r, c);
-        alias BI = B.Instantiate!(r, c);
-
-      public:
-        enum bool isValid = AI.isValid && BI.isValid
-                           && isEqOrEitherEq0(AI.rlength, BI.rlength)
-                           && isEqOrEitherEq0(AI.clength, BI.clength);
-
-        static if(isValid)
-        {
-            enum size_t rlength = AI.rlength;
-            enum size_t clength = AI.clength;
-        }
-    }
-
-
-    static struct Instantiate(size_t r, size_t c)
-    if(etoSpec == ETOSpec.matrixMulMatrix)
-    {
-        static assert(isFlexibleMatrix!A || isFlexibleMatrix!B);    //どちらかがFM
-
-        static if(isFlexibleMatrix!A && isFlexibleMatrix!B)
-        {
-            private
-            enum bool _isValid = A.Instantiate!(r, c).isValid
-                             && B.Instantiate!(r, c).isValid;
-
-            static if(_isValid)
-                enum bool isValid = _isValid && isEqOrEitherEq0(A.Instantiate!(r, c).clength, B.Instantiate!(r, c).rlength);
-            else
-                enum bool isValid = false;
-
-            static if(isValid)
-            {
-                enum rlength = A.Instantiate!(r, c).rlength;
-                enum clength = B.Instantiate!(r, c).clength;
-            }
-        }
-        else static if(isFlexibleMatrix!A)
-        {
-            private
-            enum bool _isValid = A.Instantiate!(r, c).isValid;
-
-            static if(_isValid)
-                enum bool isValid = _isValid && isEqOrEitherEq0(A.Instantiate!(r, c).clength, B.rlength);
-            else
-                enum bool isValid = false;
-
-            static if(isValid)
-            {
-                enum rlength = A.Instantiate!(r, c).rlength;
-                enum clength = B.clength;
-            }
-        }
-        else static if(isFlexibleMatrix!B)
-        {
-            private
-            enum bool _isValid = B.Instantiate!(r, c).isValid;
-
-            static if(_isValid)
-                enum bool isValid = _isValid && isEqOrEitherEq0(A.clength, B.Instantiate!(r, c).rlength);
-            else
-                enum bool isValid = false;
-
-            static if(isValid)
-            {
-                enum rlength = A.rlength;
-                enum clength = B.Instantiate!(r, c).clength;
-            }
-        }
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
         else
-            static assert(0);
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
     }
 
 
-    static struct Instantiate(size_t r, size_t c)
-    if(etoSpec == ETOSpec.matrixMulScalar)
-    {
-        static assert(isFlexibleMatrix!A);
+    mixin(defaultExprOps(staticRLength, staticCLength, false));
 
-        enum isValid = A.Instantiate!(r, c).isValid;
-        static if(isValid)
-        {
-            enum rlength = A.Instantiate!(r, c).rlength;
-            enum clength = A.Instantiate!(r, c).clength;
-        }
-    }
-
-
-    static struct Instantiate(size_t r, size_t c)
-    if(etoSpec == ETOSpec.scalarMulMatrix)
-    {
-        static assert(isFlexibleMatrix!B);
-
-        enum isValid = B.Instantiate!(r, c).isValid;
-
-        static if(isValid)
-        {
-            enum rlength = B.Instantiate!(r, c).rlength;
-            enum clength = B.Instantiate!(r, c).clength;
-        }
-    }
-  }
-
-
-    mixin ExpressionTemplateOperators!(ETOSpec.all);
-
-  static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
+  private:
+    Lhs lhs;
+    Rhs rhs;
 }
-
 
 /**
 行列に関する演算子の式
 */
-template matrixOperator(string s, A, B)
+auto matrixExpression(string s, A, B)(auto ref A a, auto ref B b)
 if(isValidOperator!(A, s, B))
 {
-    MatrixOperator!(s, A, B) matrixOperator(A a, B b)
-    {
-        return MatrixOperator!(s, A, B)(a, b);
-    }
-
-    //static assert(isMatrix!(MatrixOperator!(s, A, B)));
-}
-
-
-unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
-    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
-
-    auto m1 = [0, 1, 2, 3].toMatrix!(2, 2),
-         m2 = [2, 4, 1, 3].toMatrix!(2, 2);
-
-    assert(equal((m1 + m2).toFlatten, [2, 5, 3, 6]));
-    assert(equal((m1 - m2).toFlatten, [-2, -3, 1, 0]));
-    assert(equal((m1 * m2).toFlatten, [1, 3, 7, 17]));
-    assert(equal((m1 *  2).toFlatten, [0, 2, 4, 6]));
-    assert(equal(( 3 * m2).toFlatten, [6, 12, 3, 9]));
-}
-unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
-    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
-
-
-    auto m1 = [0, 1, 2, 3].toMatrix!(2, 2);
-
-    auto m = (m1 + m1) * (m1 + m1 * 3);
-    assert(m.toFlatten.equal([16, 24, 48, 88]));
+    return MatrixExpression!(A, s, B)(a, b);
+    static assert(isMatrix!(MatrixExpression!(A, s, B)));
 }
 
 
@@ -1278,367 +1061,656 @@ specにいれた種類の演算子をオーバーロードします。
 Example:
 ---
 struct Identity(T){
-    enum rlength = 0;
-    enum clength = 0;
+    enum rlength = wild;
+    enum clength = wild;
 
     T opIndex(size_t i, size_t j){
         return i == j ? cast(T)0 : cast(T)1;
     }
 
-    mixin ExpressionTemplateOperators!(ETOSpec.all);
+    mixin ExpressionTemplateOperators!(ETOSpec.all, wild, wild);
 }
 ---
 */
-mixin template ExpressionTemplateOperators(ETOSpec spec)
+string generateExpressionOperators(size_t spec, size_t rlen, size_t clen)
 {
-  static if(spec & ETOSpec.matrixAddMatrix)
-  {
-    auto opBinary(string op : "+", Rhs)(Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, Rhs));
-        return matrixOperator!"+"(this, mat);
-    }
+    string code;
 
-    //inoutだとconstやimmutableが伝搬できない
-    auto opBinary(string op : "+", Rhs)(const Rhs mat)
-    if(isMatrix!Rhs)
+    string lineTag(size_t line = __LINE__)
     {
-        static assert(isValidOperator!(typeof(this), op, const(Rhs)));
-        return matrixOperator!"+"(this, mat);
+        return "#line " ~ line.to!string;
     }
 
 
-    auto opBinary(string op : "+", Rhs)(immutable Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, immutable(Rhs)));
-        return matrixOperator!"+"(this, mat);
-    }
-  }
+    if(rlen == 1)
+        code ~= lineTag() ~ q{
+            alias clength length;
+            alias length opDollar;
 
 
-  static if(spec & ETOSpec.matrixSubMatrix)
-  {
-    auto opBinary(string op : "-", Rhs)(Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, Rhs));
-        return matrixOperator!"-"(this, mat);
-    }
+            auto ref opIndex(size_t i)
+            in{
+                assert(i < this.clength);
+            }
+            body{
+                return this[0, i];
+            }
+        };
+    else if(clen == 1)
+        code ~= lineTag() ~ q{
+            alias rlength length;
+            alias length opDollar;
+
+            auto ref opIndex(size_t i)
+            in{
+                assert(i < this.rlength);
+            }
+            body{
+                return this[i, 0];
+            }
+        };
 
 
-    auto opBinary(string op : "-", Rhs)(const Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, const(Rhs)));
-        return matrixOperator!"-"(this, mat);
-    }
+    if(spec & ETOSpec.opEquals)
+        code ~= lineTag() ~ q{
+            bool opEquals(Rhs)(auto ref const Rhs mat)
+            if(isMatrix!Rhs)
+            {
+                static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
 
-
-    auto opBinary(string op : "-", Rhs)(immutable Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, immutable(Rhs)));
-        return matrixOperator!"-"(this, mat);
-    }
-  }
-
-
-  static if(spec & ETOSpec.matrixMulMatrix)
-  {
-    auto opBinary(string op : "*", Rhs)(Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, Rhs));
-        return matrixOperator!"*"(this, mat);
-    }
-
-
-    auto opBinary(string op : "*", Rhs)(const Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, const(Rhs)));
-        return matrixOperator!"*"(this, mat);
-    }
-
-
-    auto opBinary(string op : "*", Rhs)(immutable Rhs mat)
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), op, immutable(Rhs)));
-        return matrixOperator!"*"(this, mat);
-    }
-  }
-
-
-  static if(spec & ETOSpec.matrixMulScalar)
-  {
-    auto opBinary(string op : "*", S)(S s)
-    if(isScalar!S)
-    {
-        static assert(isValidOperator!(typeof(this), op, S));
-        return matrixOperator!"*"(this, s);
-    }
-
-
-    auto opBinary(string op : "*", S)(const S s)
-    if(isScalar!S)
-    {
-        static assert(isValidOperator!(typeof(this), op, const(S)));
-        return matrixOperator!"*"(this, s);
-    }
-
-
-    auto opBinary(string op : "*", S)(immutable S s)
-    if(isScalar!S)
-    {
-        static assert(isValidOperator!(typeof(this), op, immutable(S)));
-        return matrixOperator!"*"(this, s);
-    }
-  }
-
-
-  static if(spec & ETOSpec.scalarMulMatrix)
-  {
-    auto opBinaryRight(string op : "*", S)(S s)
-    if(isScalar!S)
-    {
-        static assert(isValidOperator!(S, op, typeof(this)));
-        return matrixOperator!"*"(s, this);
-    }
-
-
-    auto opBinaryRight(string op : "*", S)(const S s)
-    if(isScalar!S)
-    {
-        static assert(isValidOperator!(typeof(this), op, const(S)));
-        return matrixOperator!"*"(s, this);
-    }
-
-
-    auto opBinaryRight(string op : "*", S)(immutable S s)
-    if(isScalar!S)
-    {
-        static assert(isValidOperator!(typeof(this), op, immutable(S)));
-        return matrixOperator!"*"(s, this);
-    }
-  }
-
-  static if(spec & ETOSpec.matrixEquMatrix)
-  {
-    //pragma(msg, __FILE__, "(", __LINE__, "): @system");
-    bool opEquals(Rhs)(ref const Rhs mat) @system
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), "+", const(Rhs))
-                   && ResultSize!(typeof(this), "+", const(Rhs)).rlength != 0
-                   && ResultSize!(typeof(this), "+", const(Rhs)).clength != 0);
-
-        foreach(i; 0 .. Rhs.rlength)
-            foreach(j; 0 .. Rhs.clength)
-                if(this[i, j] != mat[i, j])
+                if(this.rlength != mat.rlength)
                     return false;
-        return true;
-    }
 
-
-    //pragma(msg, __FILE__, "(", __LINE__, "): @system");
-    bool opEquals(Rhs)(const Rhs mat) @system
-    if(isMatrix!Rhs)
-    {
-        static assert(isValidOperator!(typeof(this), "+", const(Rhs))
-                   && ResultSize!(typeof(this), "+", const(Rhs)).rlength != 0
-                   && ResultSize!(typeof(this), "+", const(Rhs)).clength != 0);
-
-        foreach(i; 0 .. max(Rhs.rlength, rlength))
-            foreach(j; 0 .. max(Rhs.clength, clength))
-                if(this[i, j] != mat[i, j])
+                if(this.clength != mat.clength)
                     return false;
-        return true;
-    }
-  }
 
-  static if(typeof(this).rlength == 1 && typeof(this).clength == 1)
-  {
-    @property auto ref _scalarValue(){return this[0, 0];}
-
-    @property auto ref _scalarValue() const {return this[0, 0];}
-
-    @property auto ref _scalarValue() immutable {return this[0, 0];}
-
-    alias _scalarValue this;
-
-    alias rlength length;
-    alias length opDollar;
-
-    enum _opIndex = q{  //dmd bug : オーバーロードできない
-        auto ref opIndex(size_t i)
-        in{
-            assert(i == 0);
-        }
-        body{
-            return this[0, 0];
-        }
+                foreach(i; 0 .. this.rlength)
+                    foreach(j; 0 .. this.clength)
+                        if(this[i, j] != mat[i, j])
+                            return false;
+                return true;
+            }
+        };
 
 
-        auto ref opIndex(size_t i) const
-        in{
-            assert(i == 0);
-        }
-        body{
-            return this[0, 0];
-        }
+    if(spec & ETOSpec.toString)
+        code ~= lineTag() ~ q{
+            /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
+            @property
+            void toString(scope void delegate(const(char)[]) sink, string formatString)
+            {
+                //sink(formatString);
+                //formattedWrite(sink, formatString.replace("%r$", "%2$").replace("%c$", "%3$"), this.toRange!(Major.row), this.rlength, this.clength);
+                foreach(i; 0 .. this.rlength)
+                    foreach(j; 0 .. this.clength)
+                        formattedWrite(sink, "%s, ", this[i, j]);
+            }
+        };
 
 
-        auto ref opIndex(size_t i) immutable
-        in{
-            assert(i == 0);
-        }
-        body{
-            return this[0, 0];
-        }
-    };
-  }
-  else static if(typeof(this).rlength == 1)
-  {
-    enum _opIndex = q{  //dmd bug
-        auto ref opIndex(size_t i)
-        in{
-            assert(i < clength || clength == 0);
-        }
-        body{
-            return this[0, i];
-        }
+    if(spec & ETOSpec.matrixAddMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
+            if(isMatrix!Rhs)
+            in{
+                static if(isInferableMatrix!Rhs)
+                    assert(mat.inferSize(this.rlength, this.clength).isValid);
+                else
+                {
+                    assert(mat.rlength == this.rlength);
+                    assert(mat.clength == this.clength);
+                }
+            }
+            body{
+                static assert(isValidOperator!(typeof(this), op, Rhs));
+                return matrixExpression!"+"(this, mat);
+            }
+        };
 
 
-        auto ref opIndex(size_t i) const
-        in{
-            assert(i < clength || clength == 0);
-        }
-        body{
-            return this[0, i];
-        }
+    if(spec & ETOSpec.matrixSubMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
+            if(isMatrix!Rhs)
+            in{
+                static if(isInferableMatrix!Rhs)
+                    assert(mat.inferSize(this.rlength, this.clength).isValid);
+                else
+                {
+                    assert(mat.rlength == this.rlength);
+                    assert(mat.clength == this.clength);
+                }
+            }
+            body{
+                static assert(isValidOperator!(typeof(this), op, Rhs));
+                return matrixExpression!"-"(this, mat);
+            }
+        };
 
 
-        auto ref opIndex(size_t i) immutable
-        in{
-            assert(i < clength || clength == 0);
-        }
-        body{
-            return this[0, i];
-        }
-    };
+    if(spec & ETOSpec.matrixMulMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
+            if(isMatrix!Rhs)
+            in{
+                static if(isInferableMatrix!Rhs)
+                    assert(mat.inferSize(this.clength, wild).isValid);
+                else
+                    assert(mat.rlength == this.clength);
+            }
+            body{
+                static assert(isValidOperator!(typeof(this), op, Rhs));
+                return matrixExpression!"*"(this, mat);
+            }
+        };
 
 
-    alias clength length;
-    alias length opDollar;
-  }
-  else static if(typeof(this).clength == 1)
-  {
-    enum _opIndex = q{  //dmd bug
-        auto ref opIndex(size_t i)
-        in{
-            assert(i < rlength || rlength == 0);
-        }
-        body{
-            return this[i, 0];
-        }
+    if(spec & ETOSpec.matrixAddScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "+", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"+"(this, s);
+            }
+        };
 
 
-        auto ref opIndex(size_t i) const
-        in{
-            assert(i < rlength || rlength == 0);
-        }
-        body{
-            return this[i, 0];
-        }
+    if(spec & ETOSpec.scalarAddMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "+", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"+"(s, this);
+            }
+        };
 
 
-        auto ref opIndex(size_t i) immutable
-        in{
-            assert(i < rlength || rlength == 0);
-        }
-        body{
-            return this[i, 0];
-        }
-    };
+    if(spec & ETOSpec.matrixSubScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "-", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"-"(this, s);
+            }
+        };
 
 
-    alias rlength length;
-    alias length opDollar;
-  }
-  else
-  {
-    //pragma(msg, __FILE__, "(", __LINE__, "): Vector!(E) opIndex(size_t i)...");
-  }
+    if(spec & ETOSpec.scalarSubMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "-", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"-"(s, this);
+            }
+        };
 
-/*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
-    @property
-    void toString(scope void delegate(const(char)[]) sink, string formatString) const @system
+
+    if(spec & ETOSpec.matrixMulScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "*", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"*"(this, s);
+            }
+        };
+
+
+    if(spec & ETOSpec.scalarMulMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "*", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"*"(s, this);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixDivScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "/", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"/"(this, s);
+            }
+        };
+
+
+    if(spec & ETOSpec.scalarDivMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "/", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"/"(s, this);
+            }
+        };
+
+    return code;
+}
+
+
+//inferable matrixのため
+string generateExpressionOperatorsInferable(size_t spec)
+{
+    string lineTag(size_t line = __LINE__)
     {
-        //sink(formatString);
-        //formattedWrite(sink, formatString.replace("%r$", "%2$").replace("%c$", "%3$"), this.toRange!(Major.row), this.rlength, this.clength);
-        foreach(i; 0 .. rlength)
-            foreach(j; 0 .. clength)
-                formattedWrite(sink, "%s, ", this[i, j]);
+        return "#line " ~ line.to!string;
     }
-    //*/
+
+
+    string code = lineTag() ~ q{
+        bool opEquals(Rhs)(auto ref const Rhs mat)
+        if(isMatrix!Rhs && !is(Unqual!Rhs == typeof(this)) && !isInferableMatrix!(Rhs))
+        {
+            static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
+
+            foreach(i; 0 .. mat.rlength)
+                foreach(j; 0 .. mat.clength)
+                    if(this[i, j] != mat[i, j])
+                        return false;
+            return true;
+        }
+    };
+
+
+    if(spec & ETOSpec.matrixAddMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
+            if(isMatrix!Rhs)
+            in{
+                static if(!isInferableMatrix!Rhs)
+                    assert(this.inferSize(mat.rlength, mat.clength).isValid);
+            }
+            body{
+                static assert(isValidOperator!(typeof(this), op, Rhs));
+                return matrixExpression!"+"(this, mat);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixSubMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
+            if(isMatrix!Rhs)
+            in{
+                static if(!isInferableMatrix!Rhs)
+                    assert(this.inferSize(mat.rlength, mat.clength).isValid);
+            }
+            body{
+                static assert(isValidOperator!(typeof(this), op, Rhs));
+                return matrixExpression!"-"(this, mat);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixMulMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
+            if(isMatrix!Rhs)
+            in{
+                static if(!isInferableMatrix!Rhs)
+                    assert(this.inferSize(wild, mat.rlength).isValid);
+            }
+            body{
+                static assert(isValidOperator!(typeof(this), op, Rhs));
+                return matrixExpression!"*"(this, mat);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixAddScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "+", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"+"(this, s);
+            }
+        };
+
+
+    if(spec & ETOSpec.scalarAddMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "+", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"+"(s, this);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixSubScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "-", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"-"(this, s);
+            }
+        };
+
+
+    if(spec & ETOSpec.scalarSubMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "-", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"-"(s, this);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixMulScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "*", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"*"(this, s);
+            }
+        };
+
+
+    if(spec & ETOSpec.scalarMulMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "*", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"*"(s, this);
+            }
+        };
+
+
+    if(spec & ETOSpec.matrixDivScalar)
+        code ~= lineTag() ~ q{
+            auto opBinary(string op : "/", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(typeof(this), op, S));
+                return matrixExpression!"/"(this, s);
+            }
+        };
+
+
+    if(spec & ETOSpec.scalarDivMatrix)
+        code ~= lineTag() ~ q{
+            auto opBinaryRight(string op : "/", S)(S s)
+            if(isScalar!S)
+            {
+                static assert(isValidOperator!(S, op, typeof(this)));
+                return matrixExpression!"/"(s, this);
+            }
+        };
+
+    return code;
 }
 
 
 /**
-要素がメモリ上に連続して存在するような行列を返します。
 
-Example:
----
-import extml.all;
-
-void main(){
-    auto mr = matrix!(2, 2, int, Major.row);    // 2x2, int型, 行優先
-    assert(mr.array.equal([0, 0, 0, 0]));       // 初期化される
-
-    mr[0, 1] = 1;
-    mr[1, 0] = 2;
-    mr[1, 1] = 3;
-    assert(mr.array.equal([0, 1, 2, 3]));       // 行優先順
-
-
-    auto mc = matrix!(2, 2, int, Major.column); // 2x2, int型, 列優先
-    assert(mc.array.equal([0, 0, 0, 0]));       // 初期化される
-
-    mc[0, 1] = 1;
-    mc[1, 0] = 2;
-    mc[1, 1] = 3;
-    assert(mc.array.equal([0, 2, 1, 3]));       // 列優先順
-
-
-    auto minit = matrix!(2, 2)(12);             // 2x2, int型, 全要素12
-    assert(mc.array.equal([12, 12, 12, 12]));   // 全要素12で初期化されている
-
-    minit[0, 0] = 0;
-    minit[0, 1] = 1;
-    minit[1, 0] = 2;
-    minit[1, 1] = 3;
-
-  version(DinearColumnMajor)
-    assert(minit.array.equal([0, 2, 1, 3]));    // 列優先順
-  else
-    assert(minit.array.equal([0, 1, 2, 3]));    // 行優先順
-}
----
 */
-@property
-auto matrix(size_t r, size_t c, T, Major mjr = defaultMajor)()
-if(r != 0 && c != 0 && isScalar!T)
+string defaultExprOps(size_t rlen, size_t clen, bool isInferable = false)
 {
-    static struct Matrix()
+    if(isInferable)
+        return q{
+            mixin(generateExpressionOperatorsInferable(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString));
+            const{mixin(generateExpressionOperatorsInferable(ETOSpec.all));}
+            immutable{mixin(generateExpressionOperatorsInferable(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString));}
+        };
+    else
+        return `
+            enum _rlen_defaultExprOps = ` ~ rlen.to!string ~ `;
+            enum _clen_defaultExprOps = ` ~ clen.to!string ~ q{;
+            mixin(generateExpressionOperators(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, _rlen_defaultExprOps, _clen_defaultExprOps));
+            const{mixin(generateExpressionOperators(ETOSpec.all, _rlen_defaultExprOps, _clen_defaultExprOps));}
+            immutable{mixin(generateExpressionOperators(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, _rlen_defaultExprOps, _clen_defaultExprOps));}
+        };
+}
+
+
+unittest{
+    static struct M(size_t r, size_t c)
     {
-        enum bool isColumnMajor = mjr == Major.column;
-        enum bool isRowMajor    = mjr == Major.row;
-        enum major = mjr;
-        enum size_t rlength = r;
-        enum size_t clength = c;
+        enum rlength = r;
+        enum clength = c;
+
+        size_t opIndex(size_t i, size_t j) inout {return i + j;}
+
+        //inout:
+        mixin(defaultExprOps(r, c, false));
+    }
+
+    alias S3 = M!(3, 3);
+    alias S23 = M!(2, 3);
+    alias S13 = M!(1, 3);
+
+    static assert(isMatrix!S3);
+    static assert(hasStaticRows!S3);
+    static assert(hasStaticColumns!S3);
+    static assert(isMatrix!S23);
+    static assert(hasStaticRows!S23);
+    static assert(hasStaticColumns!S23);
+
+
+    static struct I
+    {
+        enum rlength = wild;
+        enum clength = wild;
+
+        size_t opIndex(size_t i, size_t j) inout { return i == j ? 1  : 0;}
+
+        static InferredResult inferSize(size_t r, size_t c)
+        {
+            if(r == wild && c == wild)
+                return InferredResult(false);
+            else if(isEqOrEitherEq0(r, c))
+                return InferredResult(true, max(r, c), max(r, c));
+            else
+                return InferredResult(false);
+        }
+
+        mixin(defaultExprOps(wild, wild, true));
+    }
+
+    static assert(isMatrix!I);
+    static assert(isInferableMatrix!I);
+    static assert( I.inferSize(0, 1).isValid);
+    static assert( I.inferSize(3, 3).isValid);
+    static assert(!I.inferSize(1, 3).isValid);
+
+
+    static struct D
+    {
+        size_t rlength;
+        size_t clength;
+
+        size_t opIndex(size_t i, size_t j) inout {return i + j;}
+
+        mixin(defaultExprOps(wild, wild, false));
+    }
+    static assert(isMatrix!D);
+    static assert(hasDynamicRows!D);
+    static assert(hasDynamicColumns!D);
+
+
+    S3 a;
+    auto add = a + a;
+    static assert(isMatrix!(typeof(add)));
+    static assert(hasStaticRows!(typeof(add)));
+    static assert(hasStaticColumns!(typeof(add)));
+    assert(add[0, 0] == 0); assert(add[0, 1] == 2); assert(add[0, 2] == 4);
+    assert(add[1, 0] == 2); assert(add[1, 1] == 4); assert(add[1, 2] == 6);
+    assert(add[2, 0] == 4); assert(add[2, 1] == 6); assert(add[2, 2] == 8);
+
+    auto mul = a * a;
+    static assert(isMatrix!(typeof(mul)));
+    static assert(hasStaticRows!(typeof(mul)));
+    static assert(hasStaticColumns!(typeof(mul)));
+    assert(mul[0, 0] == 5); assert(mul[0, 1] == 8); assert(mul[0, 2] ==11);
+    assert(mul[1, 0] == 8); assert(mul[1, 1] ==14); assert(mul[1, 2] ==20);
+    assert(mul[2, 0] ==11); assert(mul[2, 1] ==20); assert(mul[2, 2] ==29);
+
+    auto sadd = a + 3;
+    static assert(isMatrix!(typeof(sadd)));
+    static assert(hasStaticRows!(typeof(sadd)));
+    static assert(hasStaticColumns!(typeof(sadd)));
+    assert(sadd[0, 0] == 3); assert(sadd[0, 1] == 4); assert(sadd[0, 2] == 5);
+    assert(sadd[1, 0] == 4); assert(sadd[1, 1] == 5); assert(sadd[1, 2] == 6);
+    assert(sadd[2, 0] == 5); assert(sadd[2, 1] == 6); assert(sadd[2, 2] == 7);
+
+    auto add5 = a + a + cast(const)(a) * 3;
+    static assert(isMatrix!(typeof(add5)));
+    static assert(hasStaticRows!(typeof(add5)));
+    static assert(hasStaticColumns!(typeof(add5)));
+    assert(add5 == a * 5);
+
+
+    S13 s13;
+    assert(s13.length == 3);
+    assert(s13[0] == 0);
+    assert(s13[1] == 1);
+    assert(s13[2] == 2);
+
+    I i;
+    auto addi = a + i;
+    static assert(isMatrix!(typeof(addi)));
+    static assert(hasStaticRows!(typeof(addi)));    static assert(typeof(addi).rlength == 3);
+    static assert(hasStaticColumns!(typeof(addi))); static assert(typeof(addi).clength == 3);
+    assert(addi[0, 0] == 1); assert(addi[0, 1] == 1); assert(addi[0, 2] == 2);
+    assert(addi[1, 0] == 1); assert(addi[1, 1] == 3); assert(addi[1, 2] == 3);
+    assert(addi[2, 0] == 2); assert(addi[2, 1] == 3); assert(addi[2, 2] == 5);
+
+    auto i2 = i * 2;
+    static assert(isMatrix!(typeof(i2)));
+    static assert(isInferableMatrix!(typeof(i2)));
+    static assert( typeof(i2).inferSize(0, 1).isValid);
+    static assert( typeof(i2).inferSize(3, 3).isValid);
+    static assert(!typeof(i2).inferSize(1, 3).isValid);
+
+    auto addi2 = a + i2;
+    static assert(isMatrix!(typeof(addi2)));
+    static assert(hasStaticRows!(typeof(addi2)));    static assert(typeof(addi2).rlength == 3);
+    static assert(hasStaticColumns!(typeof(addi2))); static assert(typeof(addi2).clength == 3);
+    assert(addi2[0, 0] == 2); assert(addi2[0, 1] == 1); assert(addi2[0, 2] == 2);
+    assert(addi2[1, 0] == 1); assert(addi2[1, 1] == 4); assert(addi2[1, 2] == 3);
+    assert(addi2[2, 0] == 2); assert(addi2[2, 1] == 3); assert(addi2[2, 2] == 6);
+
+    static assert(!is(typeof(S23.init + i)));
+    static assert(!is(typeof(i + S23.init)));
+    assert(S23.init * i == S23.init);
+    assert(i * S23.init == S23.init);
+
+
+    import core.exception, std.exception;
+
+    D d33 = D(3, 3);
+    auto addsd = a + d33;
+    static assert(isMatrix!(typeof(addsd)));
+    static assert(hasStaticRows!(typeof(addsd)));
+    static assert(hasStaticColumns!(typeof(addsd)));
+    assert(addsd == a * 2);
+    assert(addsd == d33 * 2);
+
+    auto addsdr = d33 + a;
+    static assert(isMatrix!(typeof(addsdr)));
+    static assert(hasStaticRows!(typeof(addsdr)));
+    static assert(hasStaticColumns!(typeof(addsdr)));
+    assert(addsdr == addsd);
+    assert(addsdr == addsd);
+
+    assert(collectException!AssertError(D(2, 3) + a));
+    assert(collectException!AssertError(D(2, 3) + i));
+    assert(D(2, 3) * i == D(2, 3));
+
+    assert(collectException!AssertError(D(2, 3) + D(2, 2)));
+    assert(collectException!AssertError(D(2, 3) + D(3, 3)));
+    assert((D(2, 3) + D(2, 3)).rlength == 2);
+    assert((D(2, 3) + D(2, 3)).clength == 3);
+    assert((D(2, 3) * D(3, 4)).rlength == 2);
+    assert((D(2, 3) * D(3, 4)).clength == 4);
+
+    auto mulds = d33 * 3;
+    assert(mulds == d33 + d33 + d33);
+}
+
+
+/**
+要素がメモリ上に連続して存在するような行列
+*/
+struct Matrix(T, size_t r, size_t c, Major mjr = Major.row)
+if(r != 0 && c != 0)
+{
+    enum bool isColumnMajor = mjr == Major.column;
+    enum bool isRowMajor    = mjr == Major.row;
+    enum major = mjr;
+    enum size_t rlength = r;
+    enum size_t clength = c;
+
+
+    this(M)(auto ref M mat)
+    {
+        this.noAlias() = mat;
+    }
+
+
+    ref inout(T) opIndex(size_t i, size_t j) inout
+    in{
+        assert(i < rlength);
+        assert(j < clength);
+    }
+    body{
+        static if(major == Major.row)
+            return _array[i * clength + j];
+        else
+            return _array[j * rlength + i];
+    }
+
+
+    @property
+    auto array() pure nothrow @safe inout
+    {
+        return _array[];
+    }
+
+
+    void opAssign(M)(auto ref M mat)
+    if(isValidOperator!(typeof(this), "+", M))
+    {
+        this.reference() = mat;
+    }
+
+
+    @property
+    auto ref reference()
+    {
+        return RefMatrix!false(_array[]);
+    }
+
+
+    @property
+    auto ref noAlias()
+    {
+        return RefMatrix!true(_array[]);
+    }
+
+
+    static struct RefMatrix(bool noAlias)
+    {
+        enum bool isColumnMajor = Matrix.isColumnMajor;
+        enum bool isRowMajor    = Matrix.isRowMajor;
+        enum Major major = Matrix.major;
+        enum size_t rlength = Matrix.rlength;
+        enum size_t clength = Matrix.clength;
 
 
         ref inout(T) opIndex(size_t i, size_t j) inout
@@ -1647,7 +1719,7 @@ if(r != 0 && c != 0 && isScalar!T)
             assert(j < clength);
         }
         body{
-            static if(mjr == Major.row)
+            static if(major == Major.row)
                 return _array[i * clength + j];
             else
                 return _array[j * rlength + i];
@@ -1655,95 +1727,85 @@ if(r != 0 && c != 0 && isScalar!T)
 
 
         @property
-        auto ref array() pure nothrow @safe inout
+        auto array() pure nothrow @safe inout
         {
-            return _array[];
+            return _array;
         }
 
 
-        @property
-        static typeof(this) init() pure nothrow @safe
+        void opAssign(M)(auto ref M mat)
+        if(!is(typeof(this) == M) && isValidOperator!(typeof(this), "+", M))
         {
-            return typeof(this)(new T[r * c]);
+            if(_array is null)
+                _array = new T[r * c];
+
+          static if(noAlias)
+          {
+            foreach(i; 0 .. r)
+                foreach(j; 0 .. c)
+                {
+                    static if(major == Major.row)
+                        _array[i * clength + j] = mat[i, j];
+                    else
+                        _array[j * rlength + i] = mat[i, j];
+                }
+          }
+          else
+          {
+            foreach(i; 0 .. r)
+                foreach(j; 0 .. c)
+                {
+                    static if(major == Major.row)
+                        Matrix._buffer[i * clength + j] = mat[i, j];
+                    else
+                        Matrix._buffer[j * rlength + i] = mat[i, j];
+                }
+
+                _array[] = Matrix._buffer[];
+          }
         }
 
 
-        mixin ExpressionTemplateOperators!(ETOSpec.all);
-    
-      static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
+        void opAssign(M)(auto ref M mat)
+        if(is(typeof(this) == M))
+        {
+            _array = mat._array;
+        }
 
+
+        mixin(defaultExprOps(rlength, clength, false));
 
       private:
-        T[] _array;
+        T[] _array = void;
     }
 
-    return Matrix!().init;
-}
 
+    mixin(defaultExprOps(rlength, clength, false));
+
+
+  private:
+    T[r * c] _array;
+
+  static:
+    T[r * c] _buffer;
+}
 
 ///ditto
-auto matrix(size_t r, size_t c, Major mjr = defaultMajor, T)(T init)
-if(r != 0 && c != 0 && isScalar!T)
+template Rvector(T, size_t size)
 {
-    auto m = matrix!(r, c, T, mjr)();
-    m._array[] = init;
-    return m;
+    alias Matrix!(T, 1, size, Major.row) Rvector;
 }
 
-
-
-auto matrix(size_t r, size_t c, Major mjr = defaultMajor, R)(R v)
-if(r != 0 && c != 0 && isScalar!(Unqual!(std.range.ElementType!R)))
+///ditto
+template Cvector(T, size_t size)
 {
-    auto m = matrix!(r, c, Unqual!(std.range.ElementType!R), mjr)();
-    auto ar = m.array;
-    ar.put(v);
-    return m;
+    alias Matrix!(T, size, 1, Major.column) Cvector;
 }
 
-
-@property
-auto rvector(size_t c, T, Major mjr = Major.row)()
-if(c != 0 && isScalar!T)
+///ditto
+template Vector(T, size_t size)
 {
-    return matrix!(1, c, T, mjr);
-}
-
-
-auto rvector(size_t c, Major mjr = Major.row, T)(T init)
-if(c != 0 && isScalar!T)
-{
-    return matrix!(1, c, mjr)(init);
-}
-
-
-auto rvector(size_t c, Major mjr = Major.row, R)(R v)
-if(c != 0 && isScalar!(Unqual!(std.range.ElementType!R)))
-{
-    return matrix!(1, c, mjr)(v);
-}
-
-
-@property
-auto cvector(size_t r, T, Major mjr = Major.column)()
-if(r != 0 && isScalar!T)
-{
-    return matrix!(r, 1, T, mjr);
-}
-
-
-auto cvector(size_t r, Major mjr = Major.column, T)(T init)
-if(r != 0 && isScalar!T)
-{
-    return matrix!(r, 1, mjr)(init);
-}
-
-
-auto cvector(size_t r, Major mjr = Major.column, R)(R v)
-if(r != 0 && isScalar!(Unqual!(std.range.ElementType!R)))
-{
-    return matrix!(r, 1, mjr)(v);
+    alias Cvector!(T, size) Vector;
 }
 
 
@@ -1752,7 +1814,22 @@ unittest{
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
 
-    auto mr = matrix!(2, 2, int, Major.row);    // 2x2, int型, 行優先
+    Matrix!(int, 3, 3) m;
+    m[0, 0] = 0; m[0, 1] = 1; m[0, 2] = 2;
+    m[1, 0] = 1; m[1, 1] = 2; m[1, 2] = 3;
+    m[2, 0] = 2; m[2, 1] = 3; m[2, 2] = 4;
+
+    Matrix!(int, 3, 3) m2 = m * m;
+    m = m * m;
+    assert(m == m2);
+}
+
+unittest{
+    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    Matrix!(int, 2, 2, Major.row) mr;    // 2x2, int型, 行優先
     assert(mr.array.equal([0, 0, 0, 0]));       // 初期化される
 
     mr[0, 1] = 1;
@@ -1761,7 +1838,7 @@ unittest{
     assert(mr.array.equal([0, 1, 2, 3]));       // 行優先順
 
 
-    auto mc = matrix!(2, 2, int, Major.column); // 2x2, int型, 列優先
+    Matrix!(int, 2, 2, Major.column) mc; // 2x2, int型, 列優先
     assert(mc.array.equal([0, 0, 0, 0]));       // 初期化される
 
     mc[0, 1] = 1;
@@ -1770,67 +1847,211 @@ unittest{
     assert(mc.array.equal([0, 2, 1, 3]));       // 列優先順
 
 
-    auto minit = matrix!(2, 2)(12);             // 2x2, int型, 全要素12
-    assert(minit.array.equal([12, 12, 12, 12]));   // 全要素12で初期化されている
-
-    minit[0, 0] = 0;
-    minit[0, 1] = 1;
-    minit[1, 0] = 2;
-    minit[1, 1] = 3;
-
-  version(DinearColumnMajor)
-    assert(minit.array.equal([0, 2, 1, 3]));    // 列優先順
-  else
-    assert(minit.array.equal([0, 1, 2, 3]));    // 行優先順
+    Matrix!(int, 2, 2, Major.row) minit = mc;
+    assert(minit.array.equal([0, 1, 2, 3]));   // 全要素12で初期化されている
 }
+
 unittest{
-    auto m = matrix!(1, 1)(3);
-    int a = m;
-    assert(a == 3);
+    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    Matrix!(int, 1, 3) m;
+    m[0] = 3;
+    assert(m[0] == 3);
+    static assert(m.length == 3);
+    assert(m[$-1] == 0);
 }
+
 unittest{
-    auto rv1 = rvector!(3)(3);
+    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    Matrix!(int, 2, 2) m;
+    auto rm = m.reference;
+
+    assert(rm + rm == m + m);
+    assert(rm - rm == m - m);
+    assert(rm * rm == m * m);
+
+    m[0, 0] = 1; m[0, 1] = 2;
+    m[1, 0] = 2; m[1, 1] = 3;
+
+    Matrix!(int, 2, 2) m2 = m;
+    m.noAlias() = m2 + m2;
+    assert(m[0, 0] == 2);
+}
+
+unittest{
+    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    alias Rvector!(int, 3) R;
+    R rv1;
     static assert(rv1.rlength == 1);
     static assert(rv1.clength == 3);
     static assert(rv1.length  == 3);
-    assert(equal(rv1.toFlatten, [3, 3, 3]));
 
-    auto rv2 = rvector!(4)(rv1.toFlatten);
+    Rvector!(int, 4) rv2;
     static assert(rv2.rlength == 1);
     static assert(rv2.clength == 4);
     static assert(rv2.length  == 4);
-    assert(equal(rv2.toFlatten, [3, 3, 3, int.init]));
 
-    auto cv1 = cvector!(3)(3);
+    Cvector!(int, 3) cv1;
     static assert(cv1.rlength == 3);
     static assert(cv1.clength == 1);
     static assert(cv1.length  == 3);
-    assert(equal(cv1.toFlatten, [3, 3, 3]));
 
-    auto cv2 = cvector!(4)(cv1.toFlatten);
+    Cvector!(int, 4) cv2;
     static assert(cv2.rlength == 4);
     static assert(cv2.clength == 1);
     static assert(cv2.length  == 4);
-    assert(equal(cv2.toFlatten, [3, 3, 3, int.init]));
 }
 
 
-auto toRange(Major mjr = defaultMajor, A)(A mat)
+/**
+転置行列を返します。
+*/
+@property
+auto transpose(A)(A mat)
 if(isMatrix!A)
 {
-  static if(mjr == Major.column)
-    return mat.transpose.toRange!(Major.row);
-  else
-  {
+    static struct Transposed()
+    {
+      static if(isInferableMatrix!A)
+      {
+        enum size_t rlength = wild;
+        enum size_t clength = wild;
+
+        InferredResult inferSize(size_t r, size_t c)
+        {
+            return A.inferSize(c, r);
+        }
+
+        mixin(defaultExprOps(wild, wild, true));
+      }
+      else
+      {
+        static if(hasStaticColumns!A)
+        {
+            enum size_t rlength = A.clength;
+            private enum size_t _staticR = rlength;
+        }
+        else
+        {
+            @property auto ref rlength() const { return mat.clength; }
+            private enum size_t _staticR = wild;
+        }
+
+        static if(hasStaticRows!A)
+        {
+            enum size_t clength = A.rlength;
+            private enum size_t _staticC = clength;
+        }
+        else
+        {
+            @property auto ref clength() const { return mat.rlength; }
+            private enum size_t _staticC = wild;
+        }
+
+        mixin(defaultExprOps(_staticR, _staticC, false));
+      }
+
+
+        auto ref opIndex(size_t i, size_t j)
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return mat[j, i];
+        }
+
+
+        auto ref opIndex(size_t i, size_t j) const
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return mat[j, i];
+        }
+
+
+        auto ref opIndex(size_t i, size_t j) immutable
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return mat[j, i];
+        }
+
+
+      static if(extml.core.hasAssignableElements!A)
+      {
+        void opIndexAssign(E)(E e, size_t i, size_t j)
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            mat[j, i] = e;
+        }
+      }
+
+
+      private:
+        A mat;
+    }
+
+    static assert(isMatrix!(Transposed!()));
+
+    return Transposed!()(mat);
+}
+unittest{
+    Matrix!(int, 2, 2) m;
+    m[0, 0] = 0; m[0, 1] = 1;
+    m[1, 0] = 2; m[1, 1] = 3;
+
+    auto t = transpose(m);
+    assert(t[0, 0] == 0);
+    assert(t[0, 1] == 2);
+    assert(t[1, 0] == 1);
+    assert(t[1, 1] == 3);
+}
+
+
+/**
+
+*/
+auto toRange(A)(A mat)
+if(!isInferableMatrix!A)
+{
     static struct ToRange()
     {
         static struct Element()
         {
             @property auto ref front() { return _mat[_r, _cf]; }
 
-            @property auto ref back() { return _mat[_r, _cb]; }
+          static if(hasAssignableElements!A)
+            @property void front(ElementType!A e){ _mat[_r, _cf] = e; }
 
-            auto ref opIndex(size_t i) { i += _cf; return _mat[_r, i]; }
+            @property auto ref back() { return _mat[_r, _cb-1]; }
+
+          static if(hasAssignableElements!A)
+            @property void back(ElementType!A e){ _mat[_r, _cb] = e; }
+
+            auto ref opIndex(size_t i)
+            in{ assert(_cf + i <= _cb); }
+            body{ i += _cf; return _mat[_r, i]; }
+
+          static if(hasAssignableElements!A)
+            void opIndexAssign(ElementType!A e, size_t i)
+            in{ assert(_cf + i <= _cb); }
+            body{ i += _cf; _mat[_r, i] = e; }
 
             void popFront() { ++_cf; }
             void popBack() { --_cb; }
@@ -1841,22 +2062,26 @@ if(isMatrix!A)
             @property auto save() { return this; }
 
             auto opSlice() { return this.save; }
-            auto opSlice(size_t i, size_t j) { return typeof(this)(_mat, _r, _cf + i, j); }
+            auto opSlice(size_t i, size_t j) 
+            in{ assert(i <= j); assert(j <= (_cb - _cf)); }
+            body{ return typeof(this)(_mat, _r, _cf + i, _cf + j); }
 
 
           private:
             A _mat;
             size_t _r;
-            size_t _cf = 0;
-            size_t _cb = A.clength;
+            size_t _cf;
+            size_t _cb;
         }
 
 
-        @property auto front() { return Element!()(this._mat, _rf); }
+        @property auto front() { return Element!()(this._mat, _rf, 0, this._mat.clength); }
 
-        @property auto back() { return Element!()(this._mat, _rb); }
+        @property auto back() { return Element!()(this._mat, _rb-1, 0, this._mat.clength); }
 
-        auto opIndex(size_t i) { i += _rf; return Element!()(this._mat, i);}
+        auto opIndex(size_t i)
+        in{ assert(i + _rf < this._mat.rlength); }
+        body{ i += _rf; return Element!()(this._mat, i, 0, this._mat.clength); }
 
         void popFront() { ++_rf; }
         void popBack() { --_rb; }
@@ -1867,17 +2092,18 @@ if(isMatrix!A)
         @property auto save() { return this; }
 
         auto opSlice() { return this.save; }
-        auto opSlice(size_t i, size_t j) { return typeof(this)(_mat, _rf + i, j); }
+        auto opSlice(size_t i, size_t j)
+        in{ assert(i <= j); assert(_rf + j <= this._mat.rlength); }
+        body{ return typeof(this)(_mat, _rf + i, _rf + j); }
 
       private:
         A _mat;
-        size_t _rf = 0;
-        size_t _rb = A.rlength;
+        size_t _rf;
+        size_t _rb;
     }
 
 
-    return ToRange!()(mat);
-  }
+    return ToRange!()(mat, 0, mat.rlength);
 }
 
 unittest{
@@ -1885,19 +2111,36 @@ unittest{
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
 
-    auto rm33 = matrix!(3, 3, int, Major.row);
+    Matrix!(int, 3, 3) rm33;
     rm33[0, 0] = 1; rm33[0, 1] = 2; rm33[0, 2] = 3;
-    assert(equal!"equal(a, b)"(rm33.toRange, [[1, 2, 3], [0, 0, 0], [0, 0, 0]]));
-}
 
+    auto rng = rm33.reference.toRange;
+    assert(equal!"equal(a, b)"(rng, [[1, 2, 3], [0, 0, 0], [0, 0, 0]]));
+
+    rng = rng[0 .. 2];
+    assert(equal!"equal(a, b)"(rng, [[1, 2, 3], [0, 0, 0]]));
+
+    auto sliced = rng.map!"a[0 .. 2]"();
+    assert(equal!"equal(a, b)"(sliced, [[1, 2], [0, 0]]));
+    assert(equal!"equal(a, b)"(sliced.retro, [[0, 0], [1, 2]]));
+    assert(equal!"equal(a.retro, b)"(sliced.retro, [[0, 0], [2, 1]]));
+
+    assert(equal(sliced[0], [1, 2]));
+    assert(sliced[0][0] == 1);
+
+    sliced[0][0] = 12;
+    assert(rm33[0, 0] == 12);
+
+    Matrix!(int, 1, 1) rm11;
+    assert(equal!"equal(a, b)"(rm11.toRange, [[0]]));
+}
 
 
 /**
 行列をレンジにします
 */
-@property
-auto toFlatten(Major mjr = Major.row, A)(A mat)
-if(isMatrix!A)
+auto toFlatten(A)(A mat)
+if(isMatrix!A && !isInferableMatrix!A)
 {
     alias ElementType!A E;
 
@@ -1906,20 +2149,14 @@ if(isMatrix!A)
         @property
         auto ref front()
         {
-            static if(mjr == Major.row)
-                return _mat[_f / A.clength, _f % A.clength];
-            else
-                return _mat[_f % A.rlength, _f / A.rlength];
+            return _mat[_f / _mat.clength, _f % _mat.clength];
         }
 
 
         @property
         auto ref back()
         {
-            static if(mjr == Major.row)
-                return _mat[_b / A.clength, _b % A.clength];
-            else
-                return _mat[_b % A.rlength, _b / A.rlength];
+            return _mat[(_b - 1) / _mat.clength, (_b - 1) % _mat.clength];
         }
 
 
@@ -1928,10 +2165,7 @@ if(isMatrix!A)
             assert(_f + i < _b);
         }body{
             i += _f;
-            static if(mjr == Major.row)
-                return _mat[i / A.clength, i % A.clength];
-            else
-                return _mat[i % A.rlength, i / A.rlength];
+            return _mat[i / _mat.clength, i % _mat.clength];
         }
 
 
@@ -1940,20 +2174,14 @@ if(isMatrix!A)
             @property
             void front(E v)
             {
-                static if(mjr == Major.row)
-                    _mat[_f / A.clength, _f % A.clength] = v;
-                else
-                    _mat[_f % A.rlength, _f / A.rlength] = v;
+                _mat[_f / _mat.clength, _f % _mat.clength] = v;
             }
 
 
             @property
             void back(E v)
             {
-                static if(mjr == Major.row)
-                    _mat[_b / A.clength, _b % A.clength] = v;
-                else
-                    _mat[_b % A.rlength, _b / A.rlength] = v;
+                _mat[(_b - 1) / _mat.clength, (_b - 1) % _mat.clength] = v;
             }
 
 
@@ -1963,10 +2191,7 @@ if(isMatrix!A)
             }
             body{
                 i += _f;
-                static if(mjr == Major.row)
-                    _mat[i / A.clength, i % A.clength] = v;
-                else
-                    _mat[i % A.rlength, i / A.rlength] = v;
+                _mat[i / _mat.clength, i % _mat.clength] = v;
             }
         }
 
@@ -2009,57 +2234,69 @@ if(isMatrix!A)
 
     private:
         A _mat;
-        size_t _f = 0, _b = A.rlength * A.clength;
+        size_t _f, _b;
     }
 
-    return ToFlatten!()(mat);
+    return ToFlatten!()(mat, 0, mat.rlength * mat.clength);
 }
 unittest{
     scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
 
-    auto rm33 = matrix!(3, 3, int, Major.row);
+    Matrix!(int, 3, 3, Major.row) rm33;
     rm33[0, 0] = 1; rm33[0, 1] = 2; rm33[0, 2] = 3;
     //writeln(rm33.array.length;)
     assert(rm33.array == [1, 2, 3, 0, 0, 0, 0, 0, 0]);
 
-    alias Rt1 = typeof(rm33.toFlatten!(Major.row));
+    alias Rt1 = typeof(toFlatten(rm33));
     static assert(isRandomAccessRange!(Rt1));
     static assert(std.range.hasLvalueElements!(Rt1));
     static assert(std.range.hasAssignableElements!(Rt1));
     static assert(hasLength!(Rt1));
-    assert(equal(rm33.toFlatten!(Major.row), rm33.array));
+    assert(equal(rm33.reference.toFlatten, rm33.array));
+    assert(equal(rm33.reference.toFlatten.retro, rm33.array.retro));
 
-    auto cm33 = matrix!(3, 3, int, Major.column);
+    Matrix!(int, 3, 3, Major.column) cm33;
     cm33[0, 0] = 1; cm33[0, 1] = 2; cm33[0, 2] = 3;
     assert(cm33.array == [1, 0, 0, 2, 0, 0, 3, 0, 0]);
-    assert(equal(rm33.toFlatten!(Major.column), cm33.array));
+    assert(equal(cm33.reference.toFlatten, [1, 2, 3, 0, 0, 0, 0, 0, 0]));
+    assert(equal(cm33.reference.toFlatten.retro, [1, 2, 3, 0, 0, 0, 0, 0, 0].retro));
 }
+
 
 
 /**
 レンジから行列を作ります。
 */
-auto toMatrix(size_t r, size_t c, Major mjr = defaultMajor, R)(R range)
-if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr == Major.row ? (c != 0) : (r != 0)))
+auto toMatrix(size_t r, size_t c, Major mjr = Major.row, R)(R range)
+if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr == Major.row ? (c != wild) : (r != wild)))
 {
-  //static if(mjr == Major.column)
-    //return range.toMatrix!(c, r, Major.row).transpose;
-  //else
-  //{
     alias E = Unqual!(std.range.ElementType!R);
 
     static struct ToMatrix()
     {
+      static if(r != wild)
         enum size_t rlength = r;
+      else
+        auto ref rlength() const @property
+        {
+            return _range.length / typeof(this).clength;
+        }
+
+      static if(c != wild)
         enum size_t clength = c;
+      else
+        auto ref clength() const @property
+        {
+            return _range.length / typeof(this).rlength;
+        }
 
 
         auto ref opIndex(size_t i, size_t j) inout
         in{
-            assert(i < rlength || rlength == 0);
-            assert(j < clength || clength == 0);
+            assert(i < rlength || rlength == wild);
+            assert(j < clength || clength == wild);
 
           static if(hasLength!R && mjr == Major.row)
             assert(i * clength + j < this._range.length);
@@ -2075,26 +2312,7 @@ if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr 
         }
 
 
-      static if(rlength == 0 || clength == 0)
-      {
-        static struct Instantiate(size_t r, size_t c)
-        {
-            enum bool isValid = isEqOrEitherEq0(ToMatrix.rlength, r)
-                             && isEqOrEitherEq0(ToMatrix.clength, c);
-
-          static if(isValid)
-          {
-            enum size_t rlength = r == 0 ? ToMatrix.rlength : r;
-            enum size_t clength = c == 0 ? ToMatrix.clength : c;
-          }
-        }
-      }
-
-
-        mixin ExpressionTemplateOperators!(ETOSpec.all);
-
-      static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
+        mixin(defaultExprOps(r, c, false));
 
       private:
         R _range;
@@ -2105,19 +2323,18 @@ if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr 
 }
 
 unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
-
     auto r = iota(4);
-    auto mr = toMatrix!(2, 2)(r);
+    auto mr = r.toMatrix!(2, 2);
     assert(mr.toFlatten.equal([0, 1, 2, 3]));
 
     auto mc = r.toMatrix!(2, 2, Major.column);
     assert(mc.toFlatten.equal([0, 2, 1, 3]));
 }
 unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
 
@@ -2132,35 +2349,54 @@ unittest{
     static assert(isMatrix!(typeof(mr)));
     static assert(hasLvalueElements!(typeof(mr)));
     mc[3, 3] = 15;
-    import std.stdio;
-    assert(mc.toFlatten!(Major.column).equal([0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    assert(mc.transpose.toFlatten.equal([0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
                                             0, 0, 0, 0, 0, 15]));
 }
 unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
     auto mem = [0, 1, 2, 3];
-    auto r1 = mem.toMatrix!(0, 1, Major.row);
-    assert(equal(r1.instantiate!(3, 1).toFlatten, mem[0 .. 3]));
+    auto r1 = mem.toMatrix!(wild, 1, Major.row);
+    assert(equal(r1.toFlatten, mem));
 
-    mem ~= 4;
-    auto r2 = mem.toMatrix!(0, 2, Major.row);
+    mem ~= [4, 5];
+    auto r2 = mem.toMatrix!(wild, 2, Major.row);
     assert(r2[2, 0] == 4);
 
-    auto c1 = mem.toMatrix!(1, 0, Major.column);
-    assert(equal(instantiate!(1, 3)(c1).toFlatten, mem[0 .. 3]));
+    auto c1 = mem.toMatrix!(1, wild, Major.column);
+    assert(equal(c1.toFlatten, mem));
 }
 
 
 
-auto toMatrix(size_t r, size_t c, Major mjr = defaultMajor, R)(R range)
+auto toMatrix(size_t r, size_t c, Major mjr = Major.row, R)(R range)
 if(isRandomAccessRange!R && isRandomAccessRange!(Unqual!(std.range.ElementType!R)) && isScalar!(Unqual!(std.range.ElementType!(Unqual!(std.range.ElementType!R)))))
 {
     static struct ToMatrix()
     {
-        enum rlength = r;
-        enum clength = c;
+      static if(r != wild)
+        enum size_t rlength = r;
+      else
+        auto ref rlength() const @property
+        {
+          static if(mjr == Major.row)
+            return _range.length;
+          else
+            return _range[0].length;
+        }
+
+
+      static if(c != wild)
+        enum size_t clength = c;
+      else
+        auto ref clength() const @property
+        {
+          static if(mjr == Major.column)
+            return _range.length;
+          else
+            return _range[0].length;
+        }
 
 
         auto ref opIndex(size_t i, size_t j) inout
@@ -2181,26 +2417,7 @@ if(isRandomAccessRange!R && isRandomAccessRange!(Unqual!(std.range.ElementType!R
             return _range[j][i];
         }
 
-
-      static if(rlength == 0 || clength == 0)
-      {
-        static struct Instantiate(size_t r, size_t c)
-        {
-            enum bool isValid = isEqOrEitherEq0(r, ToMatrix.rlength)
-                             && isEqOrEitherEq0(c, ToMatrix.clength);
-
-          static if(isValid)
-          {
-            enum size_t rlength = r == 0 ? ToMatrix.rlength : r;
-            enum size_t clength = c == 0 ? ToMatrix.clength : c;
-          }
-        }
-      }
-
-        mixin ExpressionTemplateOperators!(ETOSpec.all);
-
-      static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
+        mixin(defaultExprOps(r, c, false));
 
       private:
         R _range;
@@ -2213,17 +2430,18 @@ unittest{
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
     auto arr = [[0, 1], [2, 3], [4, 5]];
-    auto r1 = arr.toMatrix!(3, 2, Major.row);
-    assert(equal!"equal(a, b)"(r1.toRange!(Major.row), arr));
+    auto r1 = toMatrix!(3, 2, Major.row)(arr);
+    static assert(isMatrix!(typeof(r1)));
+    assert(equal!"equal(a, b)"(r1.toRange, arr));
 
     auto r2 = arr.toMatrix!(1, 1, Major.row);
     assert(r2[0] == 0);
 
     auto r3 = arr.toMatrix!(0, 2, Major.row);
-    assert(r3.instantiate!(3, 2) == r1);
+    assert(r3 == r1);
 
     auto r4 = arr.toMatrix!(2, 0, Major.row);
-    assert(equal(r4.instantiate!(2, 2).toFlatten!(Major.row), [0, 1, 2, 3]));
+    assert(equal(r4.toFlatten, [0, 1, 2, 3]));
 
     auto r5 = arr.toMatrix!(0, 0, Major.row);
     assert(r5 == r1);
@@ -2234,7 +2452,7 @@ unittest{
 
     auto arr = [[0, 1], [2, 3], [4, 5]];
     auto r1 = arr.toMatrix!(2, 3, Major.column);
-    assert(equal!"equal(a, b)"(r1.toRange!(Major.column), arr));
+    assert(equal!"equal(a, b)"(r1.transpose.toRange, arr));
     assert(r1[0, 0] == 0); assert(r1[0, 1] == 2); assert(r1[0, 2] == 4);
     assert(r1[1, 0] == 1); assert(r1[1, 1] == 3); assert(r1[1, 2] == 5);
 
@@ -2242,14 +2460,15 @@ unittest{
     assert(r2[0] == 0);
 
     auto r3 = arr.toMatrix!(0, 3, Major.column);
-    assert(r3.instantiate!(2, 3) == r1);
+    assert(r3 == r1);
 
     auto r4 = arr.toMatrix!(2, 0, Major.column);
-    assert(equal(r4.instantiate!(2, 2).toFlatten!(Major.column), [0, 1, 2, 3]));
+    assert(equal(r4.transpose.toFlatten, [0, 1, 2, 3, 4, 5]));
 
     auto r5 = arr.toMatrix!(0, 0, Major.column);
     assert(r5 == r1);
 }
+
 
 
 /**
@@ -2257,43 +2476,29 @@ unittest{
 */
 interface IMatrix(T, size_t r, size_t c)
 {
+  static if(r != wild)
     enum rlength = r;
+  else
+    @property size_t rlength();
+
+  static if(c != wild)
     enum clength = c;
-
-  static if(rlength == 0 || clength == 0)
-  {
-    static struct Instantiate(size_t i, size_t j)
-    {
-        enum isValid = (IMatrix.rlength == 0 ? true : IMatrix.rlength == i)
-                    && (IMatrix.clength == 0 ? true : IMatrix.clength == i);
-
-        static if(isValid)
-        {
-            enum size_t rlength = IMatrix.rlength;
-            enum size_t clength = IMatrix.clength;
-        }
-    }
-  }
+  else
+    @property size_t clength();
 
     T opIndex(size_t i, size_t j)
     in{
         assert(i < rlength || rlength == 0);
         assert(j < clength || clength == 0);
     }
+}
 
 
-    T opIndex(size_t i, size_t j) const 
-    in{
-        assert(i < rlength || rlength == 0);
-        assert(j < clength || clength == 0);
-    }
+interface IInferableMatrix(T)
+{
+    InferredResult inferSize(size_t r, size_t c);
 
-
-    T opIndex(size_t i, size_t j) immutable
-    in{
-        assert(i < rlength || rlength == 0);
-        assert(j < clength || clength == 0);
-    }
+    T opIndex(size_t i, size_t j);
 }
 
 
@@ -2301,14 +2506,24 @@ interface IMatrix(T, size_t r, size_t c)
 /**
 参照型オブジェクトにして返します。
 */
-@property
-IMatrix!(ElementType!A, A.rlength, A.clength)
-        toInterface(A)(A mat)
-if(isMatrix!A)
+auto toInterface(A)(A mat)
+if(isMatrix!A && !isInferableMatrix!A)
 {
     alias ElementType!A E;
 
-    static class MatrixObj() : IMatrix!(ElementType!A, A.rlength, A.clength)
+  static if(hasStaticRows!A)
+    enum srlength = A.rlength;
+  else
+    enum srlength = wild;
+
+  static if(hasStaticColumns!A)
+    enum sclength = A.clength;
+  else
+    enum sclength = wild;
+
+    alias Interface = IMatrix!(E, srlength, sclength);
+
+    static class MatrixObj() : Interface
     {
         this(A mat)
         {
@@ -2316,7 +2531,7 @@ if(isMatrix!A)
         }
 
 
-        T opIndex(size_t i, size_t j)
+        E opIndex(size_t i, size_t j)
         in{
             assert(i < rlength);
             assert(j < clength);
@@ -2326,24 +2541,11 @@ if(isMatrix!A)
         }
 
 
-        T opIndex(size_t i, size_t j) const
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return _mat[i, j];
-        }
+      static if(srlength == wild)
+        @property size_t rlength(){ return _mat.rlength; }
 
-
-        T opIndex(size_t i, size_t j) immutable
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return _mat[i, j];
-        }
+      static if(sclength == wild)
+        @property size_t clength(){ return _mat.clength; }
 
 
       private:
@@ -2351,12 +2553,21 @@ if(isMatrix!A)
     }
 
 
-    return new MatrixObj!()(mat);
+    return cast(Interface)(new MatrixObj!()(mat));
+}
+
+unittest
+{
+    Matrix!(int, 3, 3) a;
+    auto i = toInterface(a);
+    static assert(isMatrix!(typeof(i)));
+    static assert(hasStaticRows!(typeof(i)));
+    static assert(hasStaticColumns!(typeof(i)));
 }
 
 
 
-
+/+
 /**
 単位行列を作ります。
 
@@ -2365,8 +2576,8 @@ Example:
 void main(){
     auto id = identity!int;
 
-    static assert(typeof(id).Instantiate!(4, 4).isValid);
-    static assert(!typeof(id).Instantiate!(1, 3).isValid);
+    static assert(typeof(id).CheckSize!(4, 4).isValid);
+    static assert(!typeof(id).CheckSize!(1, 3).isValid);
 
     auto m1 = Matrix2i.init;
     auto r1 = m1.toRange;
@@ -2377,20 +2588,20 @@ void main(){
 
     auto id2 = id + id;
     static assert(isMatrix!(typeof(id2)));
-    static assert(typeof(id2).Instantiate!(4, 4).isValid);
-    static assert(isFlexibleMatrix!(typeof(id2)));
+    static assert(typeof(id2).CheckSize!(4, 4).isValid);
+    static assert(hasConstraintSize!(typeof(id2)));
 
 
-    static assert(isFlexibleMatrix!(typeof(id.instantiate!(0, 2))));
+    static assert(hasConstraintSize!(typeof(id.instantiate!(0, 2))));
     auto id3 = id.instantiate!(0, 2) * id;
     static assert(id3.rlength == 2);
     static assert(id3.clength == 2);
-    static assert(!isFlexibleMatrix!(typeof(id3)));
+    static assert(!hasConstraintSize!(typeof(id3)));
     assert(equal(id3.toRange, [1, 0, 0, 1]));
 
     auto ins = id2.instantiate!(2, 2);
     static assert(isMatrix!(typeof(ins)));
-    static assert(!isFlexibleMatrix!(typeof(ins)));
+    static assert(!hasConstraintSize!(typeof(ins)));
     assert(equal(ins.toRange, [2, 0, 0, 2]));
 }
 ---
@@ -2410,7 +2621,7 @@ auto identity(E)()if(isScalar!E)
         }
 
 
-      static struct Instantiate(size_t i, size_t j)
+      static struct CheckSize(size_t i, size_t j)
       {
         static if(i == 0 && j != 0)
         {
@@ -2453,8 +2664,8 @@ unittest{
 
     auto id = identity!int;
 
-    static assert(typeof(id).Instantiate!(4, 4).isValid);
-    static assert(!typeof(id).Instantiate!(1, 3).isValid);
+    static assert(typeof(id).CheckSize!(4, 4).isValid);
+    static assert(!typeof(id).CheckSize!(1, 3).isValid);
 
     auto m1 = Matrix2i.init;
     auto r1 = m1.toFlatten!(Major.row);
@@ -2464,20 +2675,20 @@ unittest{
 
     auto id2 = id + id;
     static assert(isMatrix!(typeof(id2)));
-    static assert(typeof(id2).Instantiate!(4, 4).isValid);
-    static assert(isFlexibleMatrix!(typeof(id2)));
+    static assert(typeof(id2).CheckSize!(4, 4).isValid);
+    static assert(hasConstraintSize!(typeof(id2)));
 
 
-    static assert(isFlexibleMatrix!(typeof(id.instantiate!(0, 2))));
+    static assert(hasConstraintSize!(typeof(id.instantiate!(0, 2))));
     auto id3 = id.instantiate!(0, 2) * id;
     static assert(id3.rlength == 2);
     static assert(id3.clength == 2);
-    static assert(!isFlexibleMatrix!(typeof(id3)));
+    static assert(!hasConstraintSize!(typeof(id3)));
     assert(equal(id3.toFlatten, [1, 0, 0, 1]));
 
     auto ins = id2.instantiate!(2, 2);
     static assert(isMatrix!(typeof(ins)));
-    static assert(!isFlexibleMatrix!(typeof(ins)));
+    static assert(!hasConstraintSize!(typeof(ins)));
     assert(equal(ins.toFlatten, [2, 0, 0, 2]));
 }
 
@@ -2500,7 +2711,7 @@ auto ones(E)()if(isScalar!E)
         }
 
 
-        static struct Instantiate(size_t i, size_t j)
+        static struct CheckSize(size_t i, size_t j)
         {
             enum isValid = true;
             enum rlength = i;
@@ -2573,7 +2784,7 @@ auto ones(E)()if(isScalar!E)
             }
 
 
-            static struct Instantiate(size_t i, size_t j)
+            static struct CheckSize(size_t i, size_t j)
             {
                 enum isValid = true;
                 enum rlength = i;
@@ -2662,106 +2873,13 @@ unittest{
 
 
 /**
-転置行列を返します。
-*/
-@property
-auto transpose(A)(A mat)
-if(isMatrix!A)
-{
-    static struct Transposed()
-    {
-        enum size_t rlength = A.clength;
-        enum size_t clength = A.rlength;
-
-
-        auto ref opIndex(size_t i, size_t j)
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return mat[j, i];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) const
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return mat[j, i];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) immutable
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return mat[j, i];
-        }
-
-
-      static if(extml.core.hasAssignableElements!A)
-      {
-        void opIndexAssign(E)(E e, size_t i, size_t j) @system
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            pragma(msg, __FILE__, "(", __LINE__, "): @system...");
-            mat[j, i] = e;
-        }
-      }
-
-
-      static if(rlength == 0 || clength == 0)
-      {
-        template Instantiate(size_t r, size_t c)
-        {
-            alias Instantiate = A.Instantiate!(c, r);
-        }
-      }
-
-
-        mixin ExpressionTemplateOperators!(ETOSpec.all);
-
-      static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
-
-      private:
-        A mat;
-    }
-
-    static assert(isMatrix!(Transposed!()));
-
-    return Transposed!()(mat);
-}
-unittest{
-    auto m = matrix!(2, 2, int)();
-    m[0, 0] = 0; m[0, 1] = 1;
-    m[1, 0] = 2; m[1, 1] = 3;
-
-    auto t = transpose(m);
-    static assert(isMatrix!(typeof(t)));
-    assert(equal(t.toFlatten!(Major.row), [0, 2, 1, 3]));
-
-    t[0, 1] = 100;
-    assert(m[1, 0] == 100);
-}
-
-
-/**
 部分行列を返します
 */
 auto sub(alias rArray, alias cArray, A)(A mat)
 if(isArray!(typeof(rArray)) && isArray!(typeof(cArray)) && isMatrix!A)
 {
-    static assert(rArray.length != 0 || (A.rlength == 0 && isFlexibleMatrix!A));
-    static assert(cArray.length != 0 || (A.clength == 0 && isFlexibleMatrix!A));
+    static assert(rArray.length != 0 || (A.rlength == 0 && hasConstraintSize!A));
+    static assert(cArray.length != 0 || (A.clength == 0 && hasConstraintSize!A));
 
     static assert(A.rlength == 0 || rArray.find!"a>=b"(A.rlength).empty);
     static assert(A.clength == 0 || cArray.find!"a>=b"(A.clength).empty);
@@ -2827,7 +2945,7 @@ if(isArray!(typeof(rArray)) && isArray!(typeof(cArray)) && isMatrix!A)
 
 
         static if(rlength == 0 || clength == 0)
-        static struct Instantiate(size_t i, size_t j)
+        static struct CheckSize(size_t i, size_t j)
         {
             enum isValid = isEqOrEitherEq0(i, Sub.rlength)
                         && isEqOrEitherEq0(j, Sub.clength);
@@ -2867,8 +2985,8 @@ unittest{
 
 
     auto m4 = sub!([0], (size_t[]).init)(identity!float);
-    static assert(m4.Instantiate!(1, 3).isValid);
-    static assert(!m4.Instantiate!(3, 3).isValid);
+    static assert(m4.CheckSize!(1, 3).isValid);
+    static assert(!m4.CheckSize!(3, 3).isValid);
 }
 
 
@@ -2918,7 +3036,7 @@ unittest{
 */
 @property
 ElementType!A trace(A)(A mat)
-if(isMatrix!A && (!isFlexibleMatrix!A && A.rlength == A.clength))
+if(isMatrix!A && (!hasConstraintSize!A && A.rlength == A.clength))
 {
     alias ElementType!A T;
     T sum = cast(T)0;
@@ -2940,9 +3058,9 @@ unittest{
 ///ditto
 @property
 ElementType!A trace(size_t rc, A)(A mat)
-if(isMatrix!A && isFlexibleMatrix!A)
+if(isMatrix!A && hasConstraintSize!A)
 {
-    static assert(A.Instantiate!(rc, rc).isValid);
+    static assert(A.CheckSize!(rc, rc).isValid);
     return mat.instantiate!(rc, rc).trace;
 }
 
@@ -2999,7 +3117,7 @@ if(isVector!V1 && isVector!V2)
         auto opIndex(size_t i, size_t j) immutable { return _vec1[i] * _vec2[j]; }
 
       static if(rlength == 0 || clength == 0)
-        static struct Instantiate(size_t i, size_t j)
+        static struct CheckSize(size_t i, size_t j)
         {
             enum isValid = isEqOrEitherEq0(i, rlength)
                         && isEqOrEitherEq0(j, clength);
@@ -3059,7 +3177,7 @@ Cvector(R)(Type)(Major)
 
 とも定義されます。
 */
-/+
+/*
 import std.stdio;
 
 void main(){
@@ -3136,7 +3254,7 @@ auto genTypes(){
 }
 
 mixin(genTypes());
-+/
+*/
 template Matrix(T, size_t r, size_t c, Major mjr = defaultMajor)
 {
     alias Matrix = typeof(matrix!(r, c, T, mjr));
@@ -4107,3 +4225,4 @@ alias Matrix4x4cdr = typeof(matrix!(4, 4, cdouble, Major.row));
 alias Matrix4cdr = typeof(matrix!(4, 4, cdouble, Major.row));
 alias Matrix4x4cdc = typeof(matrix!(4, 4, cdouble, Major.column));
 alias Matrix4cdc = typeof(matrix!(4, 4, cdouble, Major.column));
++/
