@@ -30,7 +30,7 @@ ETを使わない行列
 高速化とか
 ・Blas
 
-特定行列の最適化(identity * A == AとかA.transpose.transpose == A)
+UDAによる行列演算の最適化
 
 Author: Kazuki Komatsu
 
@@ -66,7 +66,8 @@ enum size_t wild = 0;       ///動的行列とかそういうのでつかう
 四則演算が定義されている型。
 inout(ubyte)からinout(creal)などまで。
 */
-template isScalar(T){
+template isScalar(T)
+{
     enum bool isScalar = is(typeof(
         {
             T* a;
@@ -80,7 +81,9 @@ template isScalar(T){
             bool b = *a == *a;
         }));
 }
-unittest{
+
+unittest
+{
     import std.bigint, std.numeric, std.typetuple;
 
     alias TT = TypeTuple!(ubyte, ushort, uint, ulong,
@@ -105,7 +108,8 @@ unittest{
 /**
 行列の格納方式
 */
-enum Major{
+enum Major
+{
     row,
     column,
 }
@@ -127,7 +131,9 @@ template isMatrix(T)
             //static assert(isScalar!(typeof(e)));
         }));
 }
-unittest{
+
+unittest
+{
     static struct S
     {
         enum rlength = 1;
@@ -141,7 +147,9 @@ unittest{
 
     static assert(isMatrix!S);
 }
-unittest{
+
+unittest
+{
     static struct S
     {
         enum rlength = 0;
@@ -155,7 +163,9 @@ unittest{
 
     static assert(isMatrix!S);
 }
-unittest{
+
+unittest
+{
     import std.bigint, std.typetuple;
     alias TT = TypeTuple!(ubyte, ushort, uint, ulong,
                            byte,  short,  int,  long,
@@ -262,7 +272,9 @@ template isVector(V)
                         static assert(is(typeof(a) == typeof(b)));
                     }));
 }
-unittest{
+
+unittest
+{
     static struct V
     {
         enum rlength = 1;
@@ -289,7 +301,9 @@ template ElementType(A) if(isMatrix!A)
 {
     alias typeof(A.init[0, 0]) ElementType;
 }
-unittest{
+
+unittest
+{
     static struct S
     {
         enum rlength = 1;
@@ -322,7 +336,9 @@ template hasLvalueElements(A)if(isMatrix!A)
             swap(a[0, 0], a[0, 0]);
         }));
 }
-unittest{
+
+unittest
+{
     static struct M
     {
         enum rlength = 1;
@@ -355,7 +371,9 @@ template hasAssignableElements(A)if(isMatrix!A)
             a[0, 0] = e;
         }));
 }
-unittest{
+
+unittest
+{
     static struct M
     {
         enum rlength = 1;
@@ -1529,7 +1547,7 @@ if(isMatrix!A)
 unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
-    
+
     Matrix!(int, 2, 2) m;
     m[0, 0] = 0; m[0, 1] = 1;
     m[1, 0] = 2; m[1, 1] = 3;
@@ -2080,52 +2098,17 @@ unittest
 
 
 
-/+
+
 /**
 単位行列を作ります。
-
-Example:
----
-void main(){
-    auto id = identity!int;
-
-    static assert(typeof(id).CheckSize!(4, 4).isValid);
-    static assert(!typeof(id).CheckSize!(1, 3).isValid);
-
-    auto m1 = Matrix2i.init;
-    auto r1 = m1.toRange;
-    r1.put([0, 1, 2, 3]);
-    static assert(isRandomAccessRange!(typeof(r1)));
-    static assert(std.range.hasLvalueElements!(typeof(r1)));
-    assert(equal((m1 * id).range, [0, 1, 2, 3]));
-
-    auto id2 = id + id;
-    static assert(isMatrix!(typeof(id2)));
-    static assert(typeof(id2).CheckSize!(4, 4).isValid);
-    static assert(hasConstraintSize!(typeof(id2)));
-
-
-    static assert(hasConstraintSize!(typeof(id.instantiate!(0, 2))));
-    auto id3 = id.instantiate!(0, 2) * id;
-    static assert(id3.rlength == 2);
-    static assert(id3.clength == 2);
-    static assert(!hasConstraintSize!(typeof(id3)));
-    assert(equal(id3.toRange, [1, 0, 0, 1]));
-
-    auto ins = id2.instantiate!(2, 2);
-    static assert(isMatrix!(typeof(ins)));
-    static assert(!hasConstraintSize!(typeof(ins)));
-    assert(equal(ins.toRange, [2, 0, 0, 2]));
-}
----
 */
-@property
-auto identity(E)()if(isScalar!E)
+auto identity(E, size_t r, size_t c = r)()
+if(isScalar!E && r == c && r != wild)
 {
     static struct Identity()
     {
-        enum rlength = 0;
-        enum clength = 0;
+        enum rlength = r;
+        enum clength = c;
 
 
         E opIndex(size_t i, size_t j) inout
@@ -2133,41 +2116,47 @@ auto identity(E)()if(isScalar!E)
             return (i == j) ? (cast(E)1) : (cast(E)0);
         }
 
-
-      static struct CheckSize(size_t i, size_t j)
-      {
-        static if(i == 0 && j != 0)
-        {
-            enum isValid = true;
-            enum rlength = j;
-            enum clength = j;
-        }
-        else static if(j == 0 && i != 0)
-        {
-            enum isValid = true;
-            enum rlength = i;
-            enum clength = i;
-        }
-        else
-        {
-            enum isValid = i == j;
-            static if(isValid)
-            {
-                enum rlength = i;
-                enum clength = j;
-            }
-        }
-      }
-
-        mixin ExpressionTemplateOperators!(ETOSpec.all);
-
-      static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
+        mixin(defaultExprOps(r, c));
     }
 
-    static assert(isMatrix!(Identity!()));
-
     return Identity!()();
+}
+
+
+///ditto
+auto identity(E)(size_t r, size_t c)
+if(isScalar!E)
+in{
+    assert(r == c && r != 0);
+}
+body{
+    static struct Identity()
+    {
+        immutable size_t rlength;
+        immutable size_t clength;
+
+
+        E opIndex(size_t i, size_t j) inout
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return (i == j) ? (cast(E)1) : (cast(E)0);
+        }
+
+        mixin(defaultExprOps(wild, wild));
+    }
+
+    return Identity!()(r, c);
+}
+
+
+///ditto
+auto identity(E)(size_t r)
+if(isScalar!E)
+{
+    return identity!E(r, r);
 }
 
 
@@ -2175,47 +2164,33 @@ unittest{
     scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
-    auto id = identity!int;
-
-    static assert(typeof(id).CheckSize!(4, 4).isValid);
-    static assert(!typeof(id).CheckSize!(1, 3).isValid);
-
-    auto m1 = Matrix2i.init;
-    auto r1 = m1.toFlatten!(Major.row);
-    r1.put([0, 1, 2, 3]);
-    static assert(std.range.hasLvalueElements!(typeof(r1)));
-    assert(equal((m1 * id).toFlatten!(Major.row), [0, 1, 2, 3]));
-
-    auto id2 = id + id;
-    static assert(isMatrix!(typeof(id2)));
-    static assert(typeof(id2).CheckSize!(4, 4).isValid);
-    static assert(hasConstraintSize!(typeof(id2)));
+    auto id2 = identity!(int, 2);
+    Matrix!(int, 2, 2) m1;
+    (a => a.put([0, 1, 2, 3]))(m1.reference.toFlatten);
+    assert(equal((m1 * id2).toFlatten, [0, 1, 2, 3]));
 
 
-    static assert(hasConstraintSize!(typeof(id.instantiate!(0, 2))));
-    auto id3 = id.instantiate!(0, 2) * id;
-    static assert(id3.rlength == 2);
-    static assert(id3.clength == 2);
-    static assert(!hasConstraintSize!(typeof(id3)));
-    assert(equal(id3.toFlatten, [1, 0, 0, 1]));
+    auto idd = identity!(int)(2);
+    assert(equal((m1 * idd).toFlatten, [0, 1, 2, 3]));
 
-    auto ins = id2.instantiate!(2, 2);
-    static assert(isMatrix!(typeof(ins)));
-    static assert(!hasConstraintSize!(typeof(ins)));
-    assert(equal(ins.toFlatten, [2, 0, 0, 2]));
+    auto id22 = id2 + idd;
+    assert(equal(id22.toFlatten, [2, 0, 0, 2]));
+
+    m1.noAlias() = id2;
+    assert(m1.reference.toFlatten.equal([1, 0, 0, 1]));
 }
 
 
 /**
 全要素が1な行列を返します。
 */
-@property
-auto ones(E)()if(isScalar!E)
+auto ones(E, size_t r, size_t c = r)()
+if(isScalar!E && r != wild && c != wild)
 {
     static struct Ones()
     {
-        enum rlength = 0;
-        enum clength = 0;
+        enum rlength = r;
+        enum clength = c;
 
 
         E opIndex(size_t i, size_t j) inout
@@ -2223,168 +2198,70 @@ auto ones(E)()if(isScalar!E)
             return cast(E)1;
         }
 
-
-        static struct CheckSize(size_t i, size_t j)
-        {
-            enum isValid = true;
-            enum rlength = i;
-            enum clength = j;
-        }
-
-
-        mixin ExpressionTemplateOperators!(ETOSpec.all & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix);
-
-        static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
-
-
-        auto opBinary(string op : "*", S)(S s)
-        if(isScalar!S)
-        {
-            static assert(isValidOperator!(typeof(this), op, S));
-            return ns(s);
-        }
-
-
-        auto opBinary(string op : "*", S)(const S s)
-        if(isScalar!S)
-        {
-            static assert(isValidOperator!(typeof(this), op, const(S)));
-            return ns(s);
-        }
-
-
-        auto opBinary(string op : "*", S)(immutable S s)
-        if(isScalar!S)
-        {
-            static assert(isValidOperator!(typeof(this), op, immutable(S)));
-            return ns(s);
-        }
-
-
-        auto opBinaryRight(string op : "*", S)(S s)
-        if(isScalar!S)
-        {
-            static assert(isValidOperator!(S, op, typeof(this)));
-            return ns(s);
-        }
-
-
-        auto opBinaryRight(string op : "*", S)(const S s)
-        if(isScalar!S)
-        {
-            static assert(isValidOperator!(typeof(this), op, const(S)));
-            return ns(s);
-        }
-
-
-        auto opBinaryRight(string op : "*", S)(immutable S s)
-        if(isScalar!S)
-        {
-            static assert(isValidOperator!(typeof(this), op, immutable(S)));
-            return ns(s);
-        }
-
-
-        static struct Ns(E)
-        {
-            enum rlength = 0;
-            enum clength = 0;
-
-            E opIndex(size_t i, size_t j) inout
-            {
-                return e;
-            }
-
-
-            static struct CheckSize(size_t i, size_t j)
-            {
-                enum isValid = true;
-                enum rlength = i;
-                enum clength = j;
-            }
-
-
-            mixin ExpressionTemplateOperators!(ETOSpec.all & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix);
-
-            static if(is(typeof(_opIndex)))
-            mixin(_opIndex);
-
-
-            auto opBinary(string op : "*", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, const(S)));
-                return ns(e * s);
-            }
-
-
-            auto opBinary(string op : "*", S)(const S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, const(S)));
-                return ns(e * s);
-            }
-
-
-            auto opBinary(string op : "*", S)(immutable S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, immutable(S)));
-                return ns(e * s);
-            }
-
-
-            auto opBinaryRight(string op : "*", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(S, op, typeof(this)));
-                return ns(s * e);
-            }
-
-
-            auto opBinaryRight(string op : "*", S)(const S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, const(S)));
-                return ns(s * e);
-            }
-
-
-            auto opBinaryRight(string op : "*", S)(immutable S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, immutable(S)));
-                return ns(s * e);
-            }
-
-          private:
-            E e;
-        }
-
-      private:
-        static auto ns(S)(S s)
-        {
-            return Ns!S(s);
-        }
+        mixin(defaultExprOps(r, c));
     }
 
-    static assert(isMatrix!(Ones!()));
-
-    return Ones!().init;
+    return Ones!()();
 }
+
+
+///ditto
+auto ones(E)(size_t r, size_t c)
+if(isScalar!E)
+in{
+    assert(r != wild && c != 0);
+}
+body{
+    static struct Ones()
+    {
+        immutable size_t rlength;
+        immutable size_t clength;
+
+
+        E opIndex(size_t i, size_t j) inout
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return cast(E)1;
+        }
+
+        mixin(defaultExprOps(wild, wild));
+    }
+
+    return Ones!()(r, c);
+}
+
+
+///ditto
+auto ones(E)(size_t r)
+if(isScalar!E)
+{
+    return ones!E(r, r);
+}
+
 unittest{
-    auto m1 = ones!float;
-    assert(m1[0, 1] == 1);
+    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
-    auto m3 = m1 * 3;
-    assert(m3[0, 1] == 3);
+    auto on2 = ones!(int, 2);
+    Matrix!(int, 2, 2) m1;
+    (a => a.put([0, 1, 2, 3]))(m1.reference.toFlatten);
+    assert(equal((m1 * on2).toFlatten, [1, 1, 5, 5]));
 
-    auto m9 = m3 * 3;
-    assert(m9[0, 1] == 9);
+
+    auto ond = ones!(int)(2);
+    assert(equal((m1 * ond).toFlatten, [1, 1, 5, 5]));
+
+    auto on22 = on2 + ond;
+    assert(equal(on22.toFlatten, [2, 2, 2, 2]));
+
+    m1.noAlias() = on2;
+    assert(m1.reference.toFlatten.equal([1, 1, 1, 1]));
 }
 
-
+/+
 /**
 部分行列を返します
 */
