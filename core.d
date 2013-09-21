@@ -1,11 +1,12 @@
-/**
+﻿/**
 Boost::uBlas目指そうと思ったけどuBlasそんなに使ったことないし、
 じゃあ独自的な方向でいこうって感じのExpression Templateを使った行列ライブラリ。
 
 特徴は
-・ET使ってるから中間オブジェクトの生成がほとんどないらしい
 ・ET使ってるから遅延評価してるらしい
 ・ET使ってるからコンパイラ酷使するらしい
+・静的大きさがメインだけど、もちろん動的大きさも視野に入れて設計したらしい
+・identityとかonesとか、特殊な行列はそもそも大きさを持たないらしい
 ・LU分解とそれを使った逆行列ぐらいはそのうち入れるらしい
 ・疎行列とかそういう特殊行列も入れたいらしい
 ・そんな時間ない気がするらしい
@@ -13,24 +14,21 @@ Boost::uBlas目指そうと思ったけどuBlasそんなに使ったことない
 ・開発動機は「面白そう」。
 ・実行速度ってどうしたら速くなるのか開発者はしらないらしい
     開発者は趣味でプログラミングしてるから、本気で数値計算を勉強したこと無いらしい
-・素直にBLAS, LAPACKをつかいましょう。(このライブラリでも検討中)
+・素直にBLAS, LAPACKをつかいましょう。
 
 TODO:
-内積,外積, 直積,
+外積,
 LU分解, 逆行列,
-slice!([r1, r2], [c1, c2]), sub!([r1, r2, r3], [r1, r2, r3, r4]), swizzle
 共役転置
-toString
 
-帯行列, 対称行列, エルミート行列,
-疎行列,
-動的大きさを持つ行列(rlength == 0 || clength == 0)
-ETを使わない行列
+型としての行列の種別
+    帯行列, 対称行列, エルミート行列, 疎行列,
 
 高速化とか
 ・Blas
 
-UDAによる行列演算の最適化
+特定行列の最適化(identity * A == AとかA.transpose.transpose == A)
+
 
 Author: Kazuki Komatsu
 
@@ -40,13 +38,26 @@ License: NYSL
 module extml.core;
 
 import std.algorithm,
+       std.array,
        std.conv,
+       std.format,
        std.functional,
        std.range,
        std.traits,
        std.format;
 
 version(unittest) import std.stdio;
+
+
+/**
+フォーマット指定された文字列と引数から、文字列を作って返します。
+*/
+private string format(T...)(string fmt, auto ref T args)
+{
+    auto app = appender!(string)();
+    app.formattedWrite(fmt, args);
+    return app.data;
+}
 
 /**
 デフォルトでの行列が列優先か行優先のどちらでメモリ上に配置されるかをDlinearColumnMajorという
@@ -60,14 +71,13 @@ else
 
 //version(unittest) void main(){}
 
-enum size_t wild = 0;       ///動的行列とかそういうのでつかう
+enum size_t wild = 0;       /// inferableMatrix
 
 /**
 四則演算が定義されている型。
 inout(ubyte)からinout(creal)などまで。
 */
-template isScalar(T)
-{
+template isScalar(T){
     enum bool isScalar = is(typeof(
         {
             T* a;
@@ -81,9 +91,7 @@ template isScalar(T)
             bool b = *a == *a;
         }));
 }
-
-unittest
-{
+unittest{
     import std.bigint, std.numeric, std.typetuple;
 
     alias TT = TypeTuple!(ubyte, ushort, uint, ulong,
@@ -108,11 +116,12 @@ unittest
 /**
 行列の格納方式
 */
-enum Major
-{
+enum Major{
     row,
     column,
 }
+
+enum defaultMajor = Major.row;
 
 
 /**
@@ -131,9 +140,7 @@ template isMatrix(T)
             //static assert(isScalar!(typeof(e)));
         }));
 }
-
-unittest
-{
+unittest{
     static struct S
     {
         enum rlength = 1;
@@ -147,9 +154,7 @@ unittest
 
     static assert(isMatrix!S);
 }
-
-unittest
-{
+unittest{
     static struct S
     {
         enum rlength = 0;
@@ -163,9 +168,7 @@ unittest
 
     static assert(isMatrix!S);
 }
-
-unittest
-{
+unittest{
     import std.bigint, std.typetuple;
     alias TT = TypeTuple!(ubyte, ushort, uint, ulong,
                            byte,  short,  int,  long,
@@ -215,6 +218,18 @@ template hasStaticColumns(T)
 
 
 /**
+サイズが静的に決定されるか
+*/
+template hasStaticLength(T)
+{
+    enum bool hasStaticLength = is(typeof({
+            enum csize = T.clength;
+            static assert(csize > 0);
+        }));
+}
+
+
+/**
 行のサイズが動的に変化する
 */
 template hasDynamicRows(T)
@@ -237,6 +252,17 @@ template hasDynamicColumns(T)
 
 
 /**
+サイズが動的に変化する
+*/
+template hasDynamicLength(T)
+{
+    enum bool hasDynamicLength = !is(typeof({
+            enum csize = T.length;
+        }));
+}
+
+
+/**
 
 */
 struct InferredResult
@@ -248,12 +274,37 @@ struct InferredResult
 
 
 /**
+サイズが推論可能
+*/
+template isInferableMatrix(T)
+{
+    enum bool isInferableMatrix = isMatrix!T && is(typeof({
+            static assert(T.rlength == wild);
+            static assert(T.clength == wild);
+
+            enum InferredResult result = T.inferSize(wild, wild);
+
+            static if(result.isValid)
+            {
+                enum inferredRows = result.rlength;
+                enum inferredCols = result.clength;
+            }
+
+            enum someValue = 4; //非負の整数
+            static assert(!T.inferSize(wild, wild).isValid);
+            static assert(T.inferSize(wild, someValue).isValid);
+            static assert(T.inferSize(wild, someValue).isValid);
+        }));
+}
+
+
+/**
 ベクトル型かどうか判定します。
 */
 template isVector(V)
 {
-    enum isVector = isMatrix!V &&
-                    is(typeof({
+    enum isVector = isMatrix!V && !isInferableMatrix!V
+                 && is(typeof({
                         static if(hasStaticRows!V)
                         {
                             static if(hasStaticColumns!V)
@@ -272,9 +323,7 @@ template isVector(V)
                         static assert(is(typeof(a) == typeof(b)));
                     }));
 }
-
-unittest
-{
+unittest{
     static struct V
     {
         enum rlength = 1;
@@ -301,9 +350,7 @@ template ElementType(A) if(isMatrix!A)
 {
     alias typeof(A.init[0, 0]) ElementType;
 }
-
-unittest
-{
+unittest{
     static struct S
     {
         enum rlength = 1;
@@ -336,9 +383,7 @@ template hasLvalueElements(A)if(isMatrix!A)
             swap(a[0, 0], a[0, 0]);
         }));
 }
-
-unittest
-{
+unittest{
     static struct M
     {
         enum rlength = 1;
@@ -371,9 +416,7 @@ template hasAssignableElements(A)if(isMatrix!A)
             a[0, 0] = e;
         }));
 }
-
-unittest
-{
+unittest{
     static struct M
     {
         enum rlength = 1;
@@ -435,6 +478,19 @@ if(isMatrix!L && isMatrix!R && op != "*")
 {
     static if(op != "+" && op != "-")
         enum isValidOperatorImpl = false;
+    else static if(isInferableMatrix!L && isInferableMatrix!R)
+        enum isValidOperatorImpl = true;
+    else static if(isInferableMatrix!L)
+    {
+        static if(hasStaticRows!R)
+            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, R.rlength, wild), op, R);
+        else static if(hasStaticColumns!R)
+            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, wild, R.clength), op, R);
+        else
+            enum isValidOperatorImpl = true;
+    }
+    else static if(isInferableMatrix!R)
+        enum isValidOperatorImpl = isValidOperatorImpl!(R, op, L);
     else
     {
         static if(hasStaticRows!L)
@@ -459,16 +515,55 @@ if(isMatrix!L && isMatrix!R && op != "*")
 
         enum isValidOperatorImpl = _isValidR && _isValidC;
     }
+
+
+    struct Inferred(M, size_t r, size_t c)
+    if(r == wild || c == wild)
+    {
+        enum size_t rlength = M.inferSize(r, c).rlength;
+        enum size_t clength = M.inferSize(r, c).clength;
+
+        auto opIndex(size_t i, size_t j){ return M.init[i, j]; }
+    }
 }
 
 
 template isValidOperatorImpl(L, string op, R)
 if(isMatrix!L && isMatrix!R && op == "*")
 {
-    static if(hasStaticColumns!L && hasStaticRows!R)
-        enum isValidOperatorImpl = L.clength == R.rlength;
+    struct Inferred(M, size_t r, size_t c)
+    if(r == wild || c == wild)
+    {
+        enum size_t rlength = M.inferSize(r, c).rlength;
+        enum size_t clength = M.inferSize(r, c).clength;
+
+        auto opIndex(size_t i, size_t j){ return M.init[i, j]; }
+    }
+
+
+    static if(isInferableMatrix!L && isInferableMatrix!R)
+        enum isValidOperatorImpl = false;
+    else static if(isInferableMatrix!L)
+    {
+        static if(hasStaticRows!R)
+            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, wild, R.rlength), op, R);
+        else
+            enum isValidOperatorImpl = true;
+    }
+    else static if(isInferableMatrix!R)
+    {
+        static if(hasStaticColumns!L)
+            enum isValidOperatorImpl = isValidOperatorImpl!(L, op, Inferred!(R, L.clength, wild));
+        else
+            enum isValidOperatorImpl = true;
+    }
     else
-        enum isValidOperatorImpl = true;
+    {
+        static if(hasStaticColumns!L && hasStaticRows!R)
+            enum isValidOperatorImpl = L.clength == R.rlength;
+        else
+            enum isValidOperatorImpl = true;
+    }
 }
 
 
@@ -490,7 +585,25 @@ unittest{
     alias Static2x2 = S!(int, 2, 2);
 
     static struct D(T){size_t rlength = 1, clength = 1; T opIndex(size_t i, size_t j){return T.init;}}
-    alias Dynamic = D!int;
+    alias Dynamic = D!(int);
+
+    static struct I(T){
+        enum rlength = 0, clength = 0;
+        T opIndex(size_t i, size_t j){return T.init;}
+        static InferredResult inferSize(size_t rlen, size_t clen){
+            if(isEqOrEitherEq0(rlen, clen) && (rlen != 0 || clen != 0))
+                return InferredResult(true, max(rlen, clen), max(rlen, clen));
+            else
+                return InferredResult(false, 0, 0);
+        }
+    }
+    alias Inferable = I!int;
+    static assert(Inferable.inferSize(1, 0).isValid);
+
+    alias T = Inferable;
+    static assert(T.rlength == wild);
+    static assert(T.clength == wild);
+
 
     static assert( isValidOperator!(Static1x1, "+", Static1x1));
     static assert(!isValidOperator!(Static1x1, "+", Static1x2));
@@ -502,6 +615,11 @@ unittest{
     static assert( isValidOperator!(Dynamic, "+", Static1x1));
     static assert( isValidOperator!(Dynamic, "+", Static1x2));
 
+    static assert( isValidOperator!(Static1x1, "+", Inferable));
+    static assert(!isValidOperator!(Static1x2, "+", Inferable));
+    static assert( isValidOperator!(Inferable, "+", Static1x1));
+    static assert(!isValidOperator!(Inferable, "+", Static1x2));
+
     static assert( isValidOperator!(Static1x1, "*", Static1x1));
     static assert( isValidOperator!(Static1x1, "*", Static1x2));
     static assert(!isValidOperator!(Static1x2, "*", Static1x2));
@@ -511,6 +629,11 @@ unittest{
     static assert( isValidOperator!(Static1x2, "*", Dynamic));
     static assert( isValidOperator!(Dynamic, "*", Static1x1));
     static assert( isValidOperator!(Dynamic, "*", Static1x2));
+
+    static assert( isValidOperator!(Static1x1, "*", Inferable));
+    static assert( isValidOperator!(Static1x2, "*", Inferable));
+    static assert( isValidOperator!(Inferable, "*", Static1x1));
+    static assert( isValidOperator!(Inferable, "*", Static1x2));
 }
 
 
@@ -577,11 +700,125 @@ unittest{
 }
 
 
+/**
+
+*/
+struct MatrixExpression(Lhs, string s, Rhs)
+if(isValidOperator!(Lhs, s, Rhs) && (isInferableMatrix!Lhs && isInferableMatrix!Rhs) || (isInferableMatrix!Lhs && !isMatrix!Rhs) || (!isMatrix!Lhs && isInferableMatrix!Rhs))
+{
+    enum rlength = wild;
+    enum clength = wild;
+    enum etoSpec = ETOperatorSpec!(Lhs, s, Rhs);
+
+
+    this(Lhs lhs, Rhs rhs)
+    {
+        this.lhs = lhs;
+        this.rhs = rhs;
+    }
+
+
+    static InferredResult inferSize(size_t r, size_t c)
+    {
+        static if(isInferableMatrix!Lhs && isInferableMatrix!Rhs)
+        {
+            static assert(s != "*");
+            auto rLhs = Lhs.inferSize(r, c);
+            auto rRhs = Rhs.inferSize(r, c);
+
+            bool b = rLhs.isValid && rRhs.isValid && rLhs.rlength == rRhs.rlength && rLhs.clength == rRhs.clength;
+            return InferredResult(b, rLhs.rlength, rLhs.clength);
+        }
+        else static if(isInferableMatrix!Lhs)
+            return Lhs.inferSize(r, c);
+        else
+            return Rhs.inferSize(r, c);
+    }
+
+
+    auto ref opIndex(size_t i, size_t j)
+    {
+      static if(etoSpec == ETOSpec.matrixAddMatrix)
+        return this.lhs[i, j] + this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixSubMatrix)
+        return this.lhs[i, j] - this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixMulMatrix)
+      {
+        static assert(0);
+        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
+      }
+      else
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
+    }
+
+
+    auto ref opIndex(size_t i, size_t j) const 
+    {
+      static if(etoSpec == ETOSpec.matrixAddMatrix)
+        return this.lhs[i, j] + this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixSubMatrix)
+        return this.lhs[i, j] - this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixMulMatrix)
+      {
+        static assert(0);
+        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
+      }
+      else
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
+    }
+
+
+    auto ref opIndex(size_t i, size_t j) immutable
+    {
+      static if(etoSpec == ETOSpec.matrixAddMatrix)
+        return this.lhs[i, j] + this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixSubMatrix)
+        return this.lhs[i, j] - this.rhs[i, j];
+      else static if(etoSpec == ETOSpec.matrixMulMatrix)
+      {
+        static assert(0);
+        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
+      }
+      else
+      {
+        static if(isMatrix!Lhs)
+            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
+        else
+            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
+      }
+    }
+
+
+    mixin(defaultExprOps!(true));
+
+  private:
+    Lhs lhs;
+    Rhs rhs;
+}
+
 
 struct MatrixExpression(Lhs, string s, Rhs)
-if(isValidOperator!(Lhs, s, Rhs))
+if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatrix!Rhs) || (isInferableMatrix!Lhs && !isMatrix!Rhs) || (!isMatrix!Lhs && isInferableMatrix!Rhs)))
 {
     enum etoSpec = ETOperatorSpec!(Lhs, s, Rhs);
+
+
+    this(Lhs lhs, Rhs rhs)
+    {
+        this.lhs = lhs;
+        this.rhs = rhs;
+    }
+
 
     static if(isMatrix!Lhs && isMatrix!Rhs)
     {
@@ -592,9 +829,19 @@ if(isValidOperator!(Lhs, s, Rhs))
                 enum rlength = Lhs.rlength;
                 private enum staticRLength = rlength;
             }
+            else static if(isInferableMatrix!Lhs && hasStaticRows!Rhs)
+            {
+                enum rlength = Lhs.inferSize(wild, Rhs.rlength).rlength;
+                private enum staticRLength = rlength;
+            }
             else static if(hasDynamicRows!Lhs)
             {
                 @property size_t rlength() const { return this.lhs.rlength; }
+                private enum staticRLength = wild;
+            }
+            else static if(isInferableMatrix!Lhs && hasDynamicRows!Rhs)
+            {
+                @property size_t rlength() const { return this.lhs.inferSize(wild, rhs.rlength).rlength; }
                 private enum staticRLength = wild;
             }
             else
@@ -606,9 +853,19 @@ if(isValidOperator!(Lhs, s, Rhs))
                 enum clength = Rhs.clength;
                 private enum staticCLength = clength;
             }
+            else static if(isInferableMatrix!Rhs && hasStaticColumns!Lhs)
+            {
+                enum clength = Rhs.inferSize(Lhs.clength, wild).clength;
+                private enum staticCLength = clength;
+            }
             else static if(hasDynamicRows!Rhs)
             {
                 @property size_t clength() const { return this.rhs.clength; }
+                private enum staticCLength = wild;
+            }
+            else static if(isInferableMatrix!Rhs && hasDynamicColumns!Lhs)
+            {
+                @property size_t clength() const { return this.rhs.inferSize(lhs.clength, wild).clength; }
                 private enum staticCLength = wild;
             }
             else
@@ -661,6 +918,8 @@ if(isValidOperator!(Lhs, s, Rhs))
     }
     else static if(isMatrix!Lhs)
     {
+        static assert(!isInferableMatrix!Lhs);
+
         static if(hasStaticRows!Lhs)
         {
             enum rlength = Lhs.rlength;
@@ -685,6 +944,8 @@ if(isValidOperator!(Lhs, s, Rhs))
     }
     else
     {
+        static assert(!isInferableMatrix!Rhs);
+
         static if(hasStaticRows!Rhs)
         {
             enum rlength = Rhs.rlength;
@@ -820,7 +1081,7 @@ if(isValidOperator!(Lhs, s, Rhs))
     }
 
 
-    mixin(defaultExprOps(staticRLength, staticCLength));
+    mixin(defaultExprOps!(false));
 
   private:
     Lhs lhs;
@@ -855,228 +1116,438 @@ struct Identity(T){
 }
 ---
 */
-string generateExpressionOperators(size_t spec, size_t rlen, size_t clen)
+
+template ExpressionOperators(size_t spec, size_t rlen, size_t clen)
 {
-    string code;
-
-    string lineTag(size_t line = __LINE__)
-    {
-        return "#line " ~ line.to!string;
-    }
-
-
-    if(rlen == 1)
-        code ~= lineTag() ~ q{
-            alias clength length;
-            alias length opDollar;
+    
+    enum stringMixin = 
+    ( rlen == 1 ?
+    q{
+        alias clength length;
+        alias length opDollar;
 
 
-            auto ref opIndex(size_t i)
-            in{
-                assert(i < this.clength);
-            }
-            body{
-                return this[0, i];
-            }
-        };
-    else if(clen == 1)
-        code ~= lineTag() ~ q{
-            alias rlength length;
-            alias length opDollar;
+        auto ref opIndex(size_t i)
+        in{
+            assert(i < this.clength);
+        }
+        body{
+            return this[0, i];
+        }
+    } : ( clen == 1 ?
+    q{
+        alias rlength length;
+        alias length opDollar;
 
-            auto ref opIndex(size_t i)
-            in{
-                assert(i < this.rlength);
-            }
-            body{
-                return this[i, 0];
-            }
-        };
+        auto ref opIndex(size_t i)
+        in{
+            assert(i < this.rlength);
+        }
+        body{
+            return this[i, 0];
+        }
+    } : ""
+    )) ~
 
 
-    if(spec & ETOSpec.opEquals)
-        code ~= lineTag() ~ q{
-            bool opEquals(Rhs)(auto ref const Rhs mat)
-            if(isMatrix!Rhs)
+
+    (spec & ETOSpec.opEquals ?
+    q{
+        bool opEquals(Rhs)(auto ref const Rhs mat)
+        if(isMatrix!Rhs)
+        {
+            static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
+
+            static if(isInferableMatrix!Rhs)
             {
-                static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
-
+                auto result = Rhs.inferSize(this.rlength, this.clength);
+                if(!result.isValid)
+                    return false;
+            }
+            else
+            {
                 if(this.rlength != mat.rlength)
                     return false;
 
                 if(this.clength != mat.clength)
                     return false;
-
-                foreach(i; 0 .. this.rlength)
-                    foreach(j; 0 .. this.clength)
-                        if(this[i, j] != mat[i, j])
-                            return false;
-                return true;
             }
-        };
+
+            foreach(i; 0 .. this.rlength)
+                foreach(j; 0 .. this.clength)
+                    if(this[i, j] != mat[i, j])
+                        return false;
+            return true;
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.toString)
-        code ~= lineTag() ~ q{
-            /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
-            @property
-            void toString(scope void delegate(const(char)[]) sink, string formatString)
+    (spec & ETOSpec.toString ?
+    q{
+        /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
+        @property
+        void toString(scope void delegate(const(char)[]) sink, string formatString) @system
+        {
+            //sink(formatString);
+            //formattedWrite(sink, formatString.replace("%r$", "%2$").replace("%c$", "%3$"), this.toRange!(Major.row), this.rlength, this.clength);
+            foreach(i; 0 .. this.rlength)
+                foreach(j; 0 .. this.clength)
+                    formattedWrite(sink, "%s, ", this[i, j]);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixAddMatrix ?
+    q{
+        auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
+        if(isMatrix!Rhs)
+        in{
+            static if(isInferableMatrix!Rhs)
+                assert(mat.inferSize(this.rlength, this.clength).isValid);
+            else
             {
-                //sink(formatString);
-                //formattedWrite(sink, formatString.replace("%r$", "%2$").replace("%c$", "%3$"), this.toRange!(Major.row), this.rlength, this.clength);
-                foreach(i; 0 .. this.rlength)
-                    foreach(j; 0 .. this.clength)
-                        formattedWrite(sink, "%s, ", this[i, j]);
-            }
-        };
-
-
-    if(spec & ETOSpec.matrixAddMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
-            if(isMatrix!Rhs)
-            in{
                 assert(mat.rlength == this.rlength);
                 assert(mat.clength == this.clength);
             }
-            body{
-                static assert(isValidOperator!(typeof(this), op, Rhs));
-                return matrixExpression!"+"(this, mat);
-            }
-        };
+        }
+        body{
+            static assert(isValidOperator!(typeof(this), op, Rhs));
+            return matrixExpression!"+"(this, mat);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.matrixSubMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
-            if(isMatrix!Rhs)
-            in{
+    (spec & ETOSpec.matrixSubMatrix ?
+    q{
+        auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
+        if(isMatrix!Rhs)
+        in{
+            static if(isInferableMatrix!Rhs)
+                assert(mat.inferSize(this.rlength, this.clength).isValid);
+            else
+            {
                 assert(mat.rlength == this.rlength);
                 assert(mat.clength == this.clength);
             }
-            body{
-                static assert(isValidOperator!(typeof(this), op, Rhs));
-                return matrixExpression!"-"(this, mat);
-            }
-        };
+        }
+        body{
+            static assert(isValidOperator!(typeof(this), op, Rhs));
+            return matrixExpression!"-"(this, mat);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.matrixMulMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
-            if(isMatrix!Rhs)
-            in{
+    (spec & ETOSpec.matrixMulMatrix ?
+    q{
+        auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
+        if(isMatrix!Rhs)
+        in{
+            static if(isInferableMatrix!Rhs)
+                assert(mat.inferSize(this.clength, wild).isValid);
+            else
                 assert(mat.rlength == this.clength);
-            }
-            body{
-                static assert(isValidOperator!(typeof(this), op, Rhs));
-                return matrixExpression!"*"(this, mat);
-            }
-        };
+        }
+        body{
+            static assert(isValidOperator!(typeof(this), op, Rhs));
+            return matrixExpression!"*"(this, mat);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.matrixAddScalar)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "+", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, S));
-                return matrixExpression!"+"(this, s);
-            }
-        };
+    (spec & ETOSpec.matrixAddScalar ?
+    q{
+        auto opBinary(string op : "+", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"+"(this, s);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.scalarAddMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinaryRight(string op : "+", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(S, op, typeof(this)));
-                return matrixExpression!"+"(s, this);
-            }
-        };
+    (spec & ETOSpec.scalarAddMatrix ?
+    q{
+        auto opBinaryRight(string op : "+", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"+"(s, this);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.matrixSubScalar)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "-", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, S));
-                return matrixExpression!"-"(this, s);
-            }
-        };
+    (spec & ETOSpec.matrixSubScalar ?
+    q{
+        auto opBinary(string op : "-", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"-"(this, s);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.scalarSubMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinaryRight(string op : "-", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(S, op, typeof(this)));
-                return matrixExpression!"-"(s, this);
-            }
-        };
+    (spec & ETOSpec.scalarSubMatrix ?
+    q{
+        auto opBinaryRight(string op : "-", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"-"(s, this);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.matrixMulScalar)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "*", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, S));
-                return matrixExpression!"*"(this, s);
-            }
-        };
+    (spec & ETOSpec.matrixMulScalar ?
+    q{
+        auto opBinary(string op : "*", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"*"(this, s);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.scalarMulMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinaryRight(string op : "*", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(S, op, typeof(this)));
-                return matrixExpression!"*"(s, this);
-            }
-        };
+    (spec & ETOSpec.scalarMulMatrix ?
+    q{
+        auto opBinaryRight(string op : "*", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"*"(s, this);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.matrixDivScalar)
-        code ~= lineTag() ~ q{
-            auto opBinary(string op : "/", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(typeof(this), op, S));
-                return matrixExpression!"/"(this, s);
-            }
-        };
+    (spec & ETOSpec.matrixDivScalar ?
+    q{
+        auto opBinary(string op : "/", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"/"(this, s);
+        }
+    } : ""
+    ) ~
 
 
-    if(spec & ETOSpec.scalarDivMatrix)
-        code ~= lineTag() ~ q{
-            auto opBinaryRight(string op : "/", S)(S s)
-            if(isScalar!S)
-            {
-                static assert(isValidOperator!(S, op, typeof(this)));
-                return matrixExpression!"/"(s, this);
-            }
-        };
+    (spec & ETOSpec.scalarDivMatrix ?
+    q{
+        auto opBinaryRight(string op : "/", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"/"(s, this);
+        }
+    } : ""
+    );
 
-    return code;
+
+    mixin template templateMixin()
+    {
+        mixin(stringMixin);
+    }
+}
+
+
+//inferable matrixのため
+template ExpressionOperatorsInferable(size_t spec)
+{
+    enum stringMixin = 
+    q{
+    bool opEquals(Rhs)(auto ref const Rhs mat)
+    if(isMatrix!Rhs && !is(Unqual!Rhs == typeof(this)) && !isInferableMatrix!(Rhs))
+    {
+        static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
+
+        foreach(i; 0 .. mat.rlength)
+            foreach(j; 0 .. mat.clength)
+                if(this[i, j] != mat[i, j])
+                    return false;
+        return true;
+    }
+    } ~
+
+
+    (spec & ETOSpec.matrixAddMatrix ?
+    q{
+        auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
+        if(isMatrix!Rhs)
+        in{
+            static if(!isInferableMatrix!Rhs)
+                assert(this.inferSize(mat.rlength, mat.clength).isValid);
+        }
+        body{
+            static assert(isValidOperator!(typeof(this), op, Rhs));
+            return matrixExpression!"+"(this, mat);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixSubMatrix ?
+    q{
+        auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
+        if(isMatrix!Rhs)
+        in{
+            static if(!isInferableMatrix!Rhs)
+                assert(this.inferSize(mat.rlength, mat.clength).isValid);
+        }
+        body{
+            static assert(isValidOperator!(typeof(this), op, Rhs));
+            return matrixExpression!"-"(this, mat);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixMulMatrix ?
+    q{
+        auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
+        if(isMatrix!Rhs)
+        in{
+            static if(!isInferableMatrix!Rhs)
+                assert(this.inferSize(wild, mat.rlength).isValid);
+        }
+        body{
+            static assert(isValidOperator!(typeof(this), op, Rhs));
+            return matrixExpression!"*"(this, mat);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixAddScalar ?
+    q{
+        auto opBinary(string op : "+", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"+"(this, s);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.scalarAddMatrix ?
+    q{
+        auto opBinaryRight(string op : "+", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"+"(s, this);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixSubScalar ?
+    q{
+        auto opBinary(string op : "-", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"-"(this, s);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.scalarSubMatrix ?
+    q{
+        auto opBinaryRight(string op : "-", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"-"(s, this);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixMulScalar ?
+    q{
+        auto opBinary(string op : "*", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"*"(this, s);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.scalarMulMatrix ?
+    q{
+        auto opBinaryRight(string op : "*", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"*"(s, this);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.matrixDivScalar ?
+    q{
+        auto opBinary(string op : "/", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(typeof(this), op, S));
+            return matrixExpression!"/"(this, s);
+        }
+    } : ""
+    ) ~
+
+    (spec & ETOSpec.scalarDivMatrix ?
+    q{
+        auto opBinaryRight(string op : "/", S)(S s)
+        if(isScalar!S)
+        {
+            static assert(isValidOperator!(S, op, typeof(this)));
+            return matrixExpression!"/"(s, this);
+        }
+    } : ""
+    );
+
+
+    mixin template templateMixin()
+    {
+        mixin(stringMixin);
+    }
 }
 
 
 /**
 
 */
-string defaultExprOps(size_t rlen, size_t clen)
+template defaultExprOps(bool isInferable = false)
 {
-    return `
-        enum _rlen_defaultExprOps = ` ~ rlen.to!string ~ `;
-        enum _clen_defaultExprOps = ` ~ clen.to!string ~ q{;
-        mixin(generateExpressionOperators(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, _rlen_defaultExprOps, _clen_defaultExprOps));
-        const{mixin(generateExpressionOperators(ETOSpec.all, _rlen_defaultExprOps, _clen_defaultExprOps));}
-        immutable{mixin(generateExpressionOperators(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, _rlen_defaultExprOps, _clen_defaultExprOps));}
+    enum defaultExprOps = 
+    isInferable ?
+    q{
+        mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString).stringMixin);
+        const{mixin(ExpressionOperatorsInferable!(ETOSpec.all).stringMixin);}
+        immutable{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString).stringMixin);}
+    }
+    :
+    q{
+        mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, mixin(is(typeof({enum _unused_ = rlength;})) ? "rlength" : "wild"), mixin(is(typeof({enum _unused_ = clength;})) ? "this.clength" : "wild")).stringMixin);
+        const{mixin(ExpressionOperators!(ETOSpec.all, mixin(is(typeof({enum _unused_ = rlength;})) ? "rlength" : "wild"), mixin(is(typeof({enum _unused_ = clength;})) ? "this.clength" : "wild")).stringMixin);}
+        immutable{mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, mixin(is(typeof({enum _unused_ = rlength;})) ? "rlength" : "wild"), mixin(is(typeof({enum _unused_ = clength;})) ? "this.clength" : "wild")).stringMixin);}
     };
 }
 
@@ -1094,12 +1565,11 @@ unittest{
         size_t opIndex(size_t i, size_t j) inout {return i + j;}
 
         //inout:
-        mixin(defaultExprOps(r, c));
+        mixin(defaultExprOps!(false));
     }
 
     alias S3 = M!(3, 3);
     alias S23 = M!(2, 3);
-    alias S13 = M!(1, 3);
 
     static assert(isMatrix!S3);
     static assert(hasStaticRows!S3);
@@ -1109,14 +1579,39 @@ unittest{
     static assert(hasStaticColumns!S23);
 
 
-    static struct D
-    {
+    static struct I{
+        enum rlength = wild;
+        enum clength = wild;
+
+        size_t opIndex(size_t i, size_t j) inout { return i == j ? 1  : 0;}
+
+        static InferredResult inferSize(size_t r, size_t c)
+        {
+            if(r == wild && c == wild)
+                return InferredResult(false);
+            else if(isEqOrEitherEq0(r, c))
+                return InferredResult(true, max(r, c), max(r, c));
+            else
+                return InferredResult(false);
+        }
+
+        mixin(defaultExprOps!(true));
+    }
+
+    static assert(isMatrix!I);
+    static assert(isInferableMatrix!I);
+    static assert( I.inferSize(0, 1).isValid);
+    static assert( I.inferSize(3, 3).isValid);
+    static assert(!I.inferSize(1, 3).isValid);
+
+
+    static struct D{
         size_t rlength;
         size_t clength;
 
         size_t opIndex(size_t i, size_t j) inout {return i + j;}
 
-        mixin(defaultExprOps(wild, wild));
+        mixin(defaultExprOps!(false));
     }
     static assert(isMatrix!D);
     static assert(hasDynamicRows!D);
@@ -1154,12 +1649,35 @@ unittest{
     static assert(hasStaticColumns!(typeof(add5)));
     assert(add5 == a * 5);
 
+    I i;
+    auto addi = a + i;
+    static assert(isMatrix!(typeof(addi)));
+    static assert(hasStaticRows!(typeof(addi)));    static assert(typeof(addi).rlength == 3);
+    static assert(hasStaticColumns!(typeof(addi))); static assert(typeof(addi).clength == 3);
+    assert(addi[0, 0] == 1); assert(addi[0, 1] == 1); assert(addi[0, 2] == 2);
+    assert(addi[1, 0] == 1); assert(addi[1, 1] == 3); assert(addi[1, 2] == 3);
+    assert(addi[2, 0] == 2); assert(addi[2, 1] == 3); assert(addi[2, 2] == 5);
 
-    S13 s13;
-    assert(s13.length == 3);
-    assert(s13[0] == 0);
-    assert(s13[1] == 1);
-    assert(s13[2] == 2);
+    auto i2 = i * 2;
+    static assert(isMatrix!(typeof(i2)));
+    static assert(isInferableMatrix!(typeof(i2)));
+    static assert( typeof(i2).inferSize(0, 1).isValid);
+    static assert( typeof(i2).inferSize(3, 3).isValid);
+    static assert(!typeof(i2).inferSize(1, 3).isValid);
+
+    auto addi2 = a + i2;
+    static assert(isMatrix!(typeof(addi2)));
+    static assert(hasStaticRows!(typeof(addi2)));    static assert(typeof(addi2).rlength == 3);
+    static assert(hasStaticColumns!(typeof(addi2))); static assert(typeof(addi2).clength == 3);
+    assert(addi2[0, 0] == 2); assert(addi2[0, 1] == 1); assert(addi2[0, 2] == 2);
+    assert(addi2[1, 0] == 1); assert(addi2[1, 1] == 4); assert(addi2[1, 2] == 3);
+    assert(addi2[2, 0] == 2); assert(addi2[2, 1] == 3); assert(addi2[2, 2] == 6);
+
+    static assert(!is(typeof(S23.init + i)));
+    static assert(!is(typeof(i + S23.init)));
+    assert(S23.init * i == S23.init);
+    assert(i * S23.init == S23.init);
+
 
     import core.exception, std.exception;
 
@@ -1179,6 +1697,8 @@ unittest{
     assert(addsdr == addsd);
 
     assert(collectException!AssertError(D(2, 3) + a));
+    assert(collectException!AssertError(D(2, 3) + i));
+    assert(D(2, 3) * i == D(2, 3));
 
     assert(collectException!AssertError(D(2, 3) + D(2, 2)));
     assert(collectException!AssertError(D(2, 3) + D(3, 3)));
@@ -1189,6 +1709,164 @@ unittest{
 
     auto mulds = d33 * 3;
     assert(mulds == d33 + d33 + d33);
+}
+
+
+
+/**
+InferableMatrixをある大きさの行列へ固定します。
+*/
+auto congeal(size_t r, size_t c, A)(auto ref A mat)
+if(isInferableMatrix!A && A.inferSize(r, c).isValid)
+{
+    static struct Result()
+    {
+        enum size_t rlength = A.inferSize(r, c).rlength;
+        enum size_t clength = A.inferSize(r, c).clength;
+
+
+        auto ref opIndex(size_t i, size_t j) inout
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return _mat[i, j];
+        }
+
+
+      static if(extml.core.hasAssignableElements!A)
+      {
+        void opIndexAssign(E)(E e, size_t i, size_t j)
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            _mat[i, j] = e;
+        }
+      }
+
+        mixin(defaultExprOps!(false));
+
+      private:
+        A _mat;
+    }
+
+    return Result!()(mat);
+}
+unittest{
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    static struct I{
+        enum rlength = wild;
+        enum clength = wild;
+
+        size_t opIndex(size_t i, size_t j) inout { return i == j ? 1  : 0;}
+
+        static InferredResult inferSize(size_t r, size_t c)
+        {
+            if(r == wild && c == wild)
+                return InferredResult(false);
+            else if(isEqOrEitherEq0(r, c))
+                return InferredResult(true, max(r, c), max(r, c));
+            else
+                return InferredResult(false);
+        }
+
+        mixin(defaultExprOps!(true));
+    }
+
+    static assert(isMatrix!I);
+    static assert(isInferableMatrix!I);
+    static assert( I.inferSize(0, 1).isValid);
+    static assert( I.inferSize(3, 3).isValid);
+    static assert(!I.inferSize(1, 3).isValid);
+
+    I id;
+    auto i3x3 = id.congeal!(3, 3)();
+    static assert(isMatrix!(typeof(i3x3)));
+    static assert(i3x3.rlength == 3);
+    static assert(i3x3.clength == 3);
+    assert(i3x3[0, 0] == 1);assert(i3x3[1, 0] == 0);assert(i3x3[2, 0] == 0);
+    assert(i3x3[0, 1] == 0);assert(i3x3[1, 1] == 1);assert(i3x3[2, 1] == 0);
+    assert(i3x3[0, 2] == 0);assert(i3x3[1, 2] == 0);assert(i3x3[2, 2] == 1);
+}
+
+/**
+DynamicMatrixをある大きさへ固定します。
+*/
+auto congeal(size_t r, size_t c, A)(auto ref A mat)
+if(!isInferableMatrix!A && (hasDynamicRows!A || r == A.rlength) || (hasDynamicColumns!A || c == A.clength))
+in{
+    assert(mat.rlength == r);
+    assert(mat.clength == c);
+}
+body{
+    static struct Result()
+    {
+        enum rlength = r;
+        enum clength = c;
+
+
+        auto ref opIndex(size_t i, size_t j) inout
+        in{
+            assert(i < rlength);
+            assert(j < clength);
+        }
+        body{
+            return _mat[i, j];
+        }
+
+
+        static if(extml.core.hasAssignableElements!A)
+        {
+          void opIndexAssign(E)(E e, size_t i, size_t j)
+          in{
+              assert(i < rlength);
+              assert(j < clength);
+          }
+          body{
+              _mat[i, j] = e;
+          }
+        }
+
+
+        mixin(defaultExprOps!(false));
+
+      private:
+        A _mat;
+    }
+
+    return Result!()(mat);
+}
+unittest{
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    static struct D{
+        size_t rlength;
+        size_t clength;
+
+        size_t opIndex(size_t i, size_t j) inout {return i + j;}
+
+        mixin(defaultExprOps!(false));
+    }
+    static assert(isMatrix!D);
+    static assert(hasDynamicRows!D);
+    static assert(hasDynamicColumns!D);
+
+    D d3x3 = D(3, 3);
+    auto s3x3 = d3x3.congeal!(3, 3)();
+    static assert(isMatrix!(typeof(s3x3)));
+    static assert(s3x3.rlength == 3);
+    static assert(s3x3.clength == 3);
+    assert(s3x3[0, 0] == 0);assert(s3x3[1, 0] == 1);assert(s3x3[2, 0] == 2);
+    assert(s3x3[0, 1] == 1);assert(s3x3[1, 1] == 2);assert(s3x3[2, 1] == 3);
+    assert(s3x3[0, 2] == 2);assert(s3x3[1, 2] == 3);assert(s3x3[2, 2] == 4);
 }
 
 
@@ -1211,7 +1889,20 @@ if(r != 0 && c != 0)
     }
 
 
-    ref inout(T) opIndex(size_t i, size_t j) inout
+    auto ref opIndex(size_t i, size_t j)
+    in{
+        assert(i < rlength);
+        assert(j < clength);
+    }
+    body{
+        static if(major == Major.row)
+            return _array[i * clength + j];
+        else
+            return _array[j * rlength + i];
+    }
+
+
+    auto ref opIndex(size_t i, size_t j) const
     in{
         assert(i < rlength);
         assert(j < clength);
@@ -1230,6 +1921,8 @@ if(r != 0 && c != 0)
         return _array[];
     }
 
+    mixin(defaultExprOps!(false));
+
 
     void opAssign(M)(auto ref M mat)
     if(isValidOperator!(typeof(this), "+", M))
@@ -1240,15 +1933,25 @@ if(r != 0 && c != 0)
 
     @property
     auto ref reference()
-    {
+    {/*
+        static RefMatrix!(false) refer;
+        if(refer._array is null)
+            refer._array = _array[];
+
+        return refer;*/
         return RefMatrix!false(_array[]);
     }
 
 
     @property
     auto ref noAlias()
-    {
-        return RefMatrix!true(_array[]);
+    {/*
+        static RefMatrix!(true) noalias;
+        if(noalias._array is null)
+            noalias._array = _array[];
+
+        return noalias;*/
+        return RefMatrix!(true)(_array[]);
     }
 
 
@@ -1261,7 +1964,7 @@ if(r != 0 && c != 0)
         enum size_t clength = Matrix.clength;
 
 
-        ref inout(T) opIndex(size_t i, size_t j) inout
+        auto ref opIndex(size_t i, size_t j) pure nothrow @safe inout
         in{
             assert(i < rlength);
             assert(j < clength);
@@ -1280,13 +1983,15 @@ if(r != 0 && c != 0)
             return _array;
         }
 
+        alias array toFlatten;
+
+
+        mixin(defaultExprOps!(false));
+
 
         void opAssign(M)(auto ref M mat)
         if(!is(typeof(this) == M) && isValidOperator!(typeof(this), "+", M))
         {
-            if(_array is null)
-                _array = new T[r * c];
-
           static if(noAlias)
           {
             foreach(i; 0 .. r)
@@ -1308,27 +2013,16 @@ if(r != 0 && c != 0)
                     else
                         Matrix._buffer[j * rlength + i] = mat[i, j];
                 }
-
-                _array[] = Matrix._buffer[];
+            
+            assert(_array[].length == Matrix._buffer[].length);
+            _array[] = Matrix._buffer[];
           }
         }
 
 
-        void opAssign(M)(auto ref M mat)
-        if(is(typeof(this) == M))
-        {
-            _array = mat._array;
-        }
-
-
-        mixin(defaultExprOps(rlength, clength));
-
       private:
-        T[] _array = void;
+        T[] _array;
     }
-
-
-    mixin(defaultExprOps(rlength, clength));
 
 
   private:
@@ -1468,58 +2162,37 @@ if(isMatrix!A)
 {
     static struct Transposed()
     {
+      static if(isInferableMatrix!A)
+      {
+        enum size_t rlength = wild;
+        enum size_t clength = wild;
+
+        static InferredResult inferSize(size_t r, size_t c)
+        {
+            return A.inferSize(c, r);
+        }
+      }
+      else
+      {
         static if(hasStaticColumns!A)
-        {
             enum size_t rlength = A.clength;
-            private enum size_t _staticR = rlength;
-        }
         else
-        {
-            @property auto ref rlength() const { return mat.clength; }
-            private enum size_t _staticR = wild;
-        }
+            @property auto ref rlength() inout { return _mat.clength; }
 
         static if(hasStaticRows!A)
-        {
             enum size_t clength = A.rlength;
-            private enum size_t _staticC = clength;
-        }
         else
-        {
-            @property auto ref clength() const { return mat.rlength; }
-            private enum size_t _staticC = wild;
-        }
-
-        mixin(defaultExprOps(_staticR, _staticC));
+            @property auto ref clength() inout { return _mat.rlength; }
+      }
 
 
-        auto ref opIndex(size_t i, size_t j)
+        auto ref opIndex(size_t i, size_t j) inout
         in{
             assert(i < rlength);
             assert(j < clength);
         }
         body{
-            return mat[j, i];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) const
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return mat[j, i];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) immutable
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return mat[j, i];
+            return _mat[j, i];
         }
 
 
@@ -1531,16 +2204,22 @@ if(isMatrix!A)
             assert(j < clength);
         }
         body{
-            mat[j, i] = e;
+            _mat[j, i] = e;
         }
       }
 
+        mixin(defaultExprOps!(isInferableMatrix!A));
+
+
+        auto ref transpose() @property inout
+        {
+            return _mat;
+        }
+
 
       private:
-        A mat;
+        A _mat;
     }
-
-    static assert(isMatrix!(Transposed!()));
 
     return Transposed!()(mat);
 }
@@ -1548,17 +2227,36 @@ unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
+
     Matrix!(int, 2, 2) m;
     m[0, 0] = 0; m[0, 1] = 1;
     m[1, 0] = 2; m[1, 1] = 3;
 
-    auto t = transpose(m);
+    auto t = m.transpose;
     assert(t[0, 0] == 0);
     assert(t[0, 1] == 2);
     assert(t[1, 0] == 1);
     assert(t[1, 1] == 3);
 }
+unittest{
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
+
+    Cvector!(int, 3) v;
+    v[0] = 1; v[1] = 2; v[2] = 3;
+
+    auto t = v.transpose;
+    assert(t[0] == 1);
+    assert(t[1] == 2);
+    assert(t[2] == 3);
+
+    assert(t.rlength == 1);
+    assert(t.clength == 3);
+
+
+    static assert(is(typeof(v) == typeof(t.transpose)));
+}
 
 /**
 
@@ -1572,22 +2270,9 @@ if(isMatrix!A)
         {
             @property auto ref front() { return _mat[_r, _cf]; }
 
-          static if(hasAssignableElements!A)
-            @property void front(ElementType!A e){ _mat[_r, _cf] = e; }
+            @property auto ref back() { return _mat[_r, _cb]; }
 
-            @property auto ref back() { return _mat[_r, _cb-1]; }
-
-          static if(hasAssignableElements!A)
-            @property void back(ElementType!A e){ _mat[_r, _cb] = e; }
-
-            auto ref opIndex(size_t i)
-            in{ assert(_cf + i <= _cb); }
-            body{ i += _cf; return _mat[_r, i]; }
-
-          static if(hasAssignableElements!A)
-            void opIndexAssign(ElementType!A e, size_t i)
-            in{ assert(_cf + i <= _cb); }
-            body{ i += _cf; _mat[_r, i] = e; }
+            auto ref opIndex(size_t i) { i += _cf; return _mat[_r, i]; }
 
             void popFront() { ++_cf; }
             void popBack() { --_cb; }
@@ -1598,26 +2283,22 @@ if(isMatrix!A)
             @property auto save() { return this; }
 
             auto opSlice() { return this.save; }
-            auto opSlice(size_t i, size_t j) 
-            in{ assert(i <= j); assert(j <= (_cb - _cf)); }
-            body{ return typeof(this)(_mat, _r, _cf + i, _cf + j); }
+            auto opSlice(size_t i, size_t j) { return typeof(this)(_mat, _r, _cf + i, j); }
 
 
           private:
             A _mat;
             size_t _r;
-            size_t _cf;
-            size_t _cb;
+            size_t _cf = 0;
+            size_t _cb = A.clength;
         }
 
 
-        @property auto front() { return Element!()(this._mat, _rf, 0, this._mat.clength); }
+        @property auto front() { return Element!()(this._mat, _rf); }
 
-        @property auto back() { return Element!()(this._mat, _rb-1, 0, this._mat.clength); }
+        @property auto back() { return Element!()(this._mat, _rb); }
 
-        auto opIndex(size_t i)
-        in{ assert(i + _rf < this._mat.rlength); }
-        body{ i += _rf; return Element!()(this._mat, i, 0, this._mat.clength); }
+        auto opIndex(size_t i) { i += _rf; return Element!()(this._mat, i);}
 
         void popFront() { ++_rf; }
         void popBack() { --_rb; }
@@ -1628,18 +2309,16 @@ if(isMatrix!A)
         @property auto save() { return this; }
 
         auto opSlice() { return this.save; }
-        auto opSlice(size_t i, size_t j)
-        in{ assert(i <= j); assert(_rf + j <= this._mat.rlength); }
-        body{ return typeof(this)(_mat, _rf + i, _rf + j); }
+        auto opSlice(size_t i, size_t j) { return typeof(this)(_mat, _rf + i, j); }
 
       private:
         A _mat;
-        size_t _rf;
-        size_t _rb;
+        size_t _rf = 0;
+        size_t _rb = A.rlength;
     }
 
 
-    return ToRange!()(mat, 0, mat.rlength);
+    return ToRange!()(mat);
 }
 
 unittest{
@@ -1649,23 +2328,7 @@ unittest{
 
     Matrix!(int, 3, 3) rm33;
     rm33[0, 0] = 1; rm33[0, 1] = 2; rm33[0, 2] = 3;
-
-    auto rng = rm33.reference.toRange;
-    assert(equal!"equal(a, b)"(rng, [[1, 2, 3], [0, 0, 0], [0, 0, 0]]));
-
-    rng = rng[0 .. 2];
-    assert(equal!"equal(a, b)"(rng, [[1, 2, 3], [0, 0, 0]]));
-
-    auto sliced = rng.map!"a[0 .. 2]"();
-    assert(equal!"equal(a, b)"(sliced, [[1, 2], [0, 0]]));
-    assert(equal!"equal(a, b)"(sliced.retro, [[0, 0], [1, 2]]));
-    assert(equal!"equal(a.retro, b)"(sliced.retro, [[0, 0], [2, 1]]));
-
-    assert(equal(sliced[0], [1, 2]));
-    assert(sliced[0][0] == 1);
-
-    sliced[0][0] = 12;
-    assert(rm33[0, 0] == 12);
+    assert(equal!"equal(a, b)"(rm33.toRange, [[1, 2, 3], [0, 0, 0], [0, 0, 0]]));
 
     Matrix!(int, 1, 1) rm11;
     assert(equal!"equal(a, b)"(rm11.toRange, [[0]]));
@@ -1676,7 +2339,7 @@ unittest{
 行列をレンジにします
 */
 auto toFlatten(A)(A mat)
-if(isMatrix!A)
+if(isMatrix!A && !isInferableMatrix!A)
 {
     alias ElementType!A E;
 
@@ -1692,7 +2355,7 @@ if(isMatrix!A)
         @property
         auto ref back()
         {
-            return _mat[(_b - 1) / _mat.clength, (_b - 1) % _mat.clength];
+            return _mat[_b / _mat.clength, _b % _mat.clength];
         }
 
 
@@ -1717,7 +2380,7 @@ if(isMatrix!A)
             @property
             void back(E v)
             {
-                _mat[(_b - 1) / _mat.clength, (_b - 1) % _mat.clength] = v;
+                _mat[_b / _mat.clength, _b % _mat.clength] = v;
             }
 
 
@@ -1790,14 +2453,12 @@ unittest{
     static assert(std.range.hasLvalueElements!(Rt1));
     static assert(std.range.hasAssignableElements!(Rt1));
     static assert(hasLength!(Rt1));
-    assert(equal(rm33.reference.toFlatten, rm33.array));
-    assert(equal(rm33.reference.toFlatten.retro, rm33.array.retro));
+    assert(equal(rm33.toFlatten, rm33.array));
 
     Matrix!(int, 3, 3, Major.column) cm33;
     cm33[0, 0] = 1; cm33[0, 1] = 2; cm33[0, 2] = 3;
     assert(cm33.array == [1, 0, 0, 2, 0, 0, 3, 0, 0]);
-    assert(equal(cm33.reference.toFlatten, [1, 2, 3, 0, 0, 0, 0, 0, 0]));
-    assert(equal(cm33.reference.toFlatten.retro, [1, 2, 3, 0, 0, 0, 0, 0, 0].retro));
+    assert(equal(cm33.toFlatten, [1, 2, 3, 0, 0, 0, 0, 0, 0]));
 }
 
 
@@ -1808,6 +2469,10 @@ unittest{
 auto toMatrix(size_t r, size_t c, Major mjr = Major.row, R)(R range)
 if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr == Major.row ? (c != wild) : (r != wild)))
 {
+  //static if(mjr == Major.column)
+    //return range.toMatrix!(c, r, Major.row).transpose;
+  //else
+  //{
     alias E = Unqual!(std.range.ElementType!R);
 
     static struct ToMatrix()
@@ -1820,7 +2485,7 @@ if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr 
             return _range.length / typeof(this).clength;
         }
 
-      static if(c != wild)
+      static if(c!= wild)
         enum size_t clength = c;
       else
         auto ref clength() const @property
@@ -1831,8 +2496,8 @@ if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr 
 
         auto ref opIndex(size_t i, size_t j) inout
         in{
-            assert(i < rlength || rlength == wild);
-            assert(j < clength || clength == wild);
+            assert(i < rlength || rlength == 0);
+            assert(j < clength || clength == 0);
 
           static if(hasLength!R && mjr == Major.row)
             assert(i * clength + j < this._range.length);
@@ -1848,7 +2513,7 @@ if(isRandomAccessRange!R && isScalar!(Unqual!(std.range.ElementType!R)) && (mjr 
         }
 
 
-        mixin(defaultExprOps(r, c));
+        mixin(defaultExprOps!(false));
 
       private:
         R _range;
@@ -1862,8 +2527,9 @@ unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
+
     auto r = iota(4);
-    auto mr = r.toMatrix!(2, 2);
+    auto mr = toMatrix!(2, 2)(r);
     assert(mr.toFlatten.equal([0, 1, 2, 3]));
 
     auto mc = r.toMatrix!(2, 2, Major.column);
@@ -1892,13 +2558,15 @@ unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
+
     auto mem = [0, 1, 2, 3];
     auto r1 = mem.toMatrix!(wild, 1, Major.row);
-    assert(equal(r1.toFlatten, mem));
+    assert(equal(r1.toFlatten, mem[0 .. 4]));
 
     mem ~= [4, 5];
     auto r2 = mem.toMatrix!(wild, 2, Major.row);
     assert(r2[2, 0] == 4);
+    assert(r2[2, 1] == 5);
 
     auto c1 = mem.toMatrix!(1, wild, Major.column);
     assert(equal(c1.toFlatten, mem));
@@ -1953,7 +2621,7 @@ if(isRandomAccessRange!R && isRandomAccessRange!(Unqual!(std.range.ElementType!R
             return _range[j][i];
         }
 
-        mixin(defaultExprOps(r, c));
+        mixin(defaultExprOps!(false));
 
       private:
         R _range;
@@ -1965,6 +2633,7 @@ unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
+
     auto arr = [[0, 1], [2, 3], [4, 5]];
     auto r1 = toMatrix!(3, 2, Major.row)(arr);
     static assert(isMatrix!(typeof(r1)));
@@ -1974,10 +2643,10 @@ unittest{
     assert(r2[0] == 0);
 
     auto r3 = arr.toMatrix!(0, 2, Major.row);
-    assert(r3 == r1);
+    assert(r3.congeal!(3, 2) == r1);
 
     auto r4 = arr.toMatrix!(2, 0, Major.row);
-    assert(equal(r4.toFlatten, [0, 1, 2, 3]));
+    assert(equal(r4.congeal!(2, 2)().toFlatten(), [0, 1, 2, 3]));
 
     auto r5 = arr.toMatrix!(0, 0, Major.row);
     assert(r5 == r1);
@@ -1985,6 +2654,7 @@ unittest{
 unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
 
     auto arr = [[0, 1], [2, 3], [4, 5]];
     auto r1 = arr.toMatrix!(2, 3, Major.column);
@@ -1995,120 +2665,40 @@ unittest{
     auto r2 = arr.toMatrix!(1, 1, Major.column);
     assert(r2[0] == 0);
 
-    auto r3 = arr.toMatrix!(0, 3, Major.column);
+    auto r3 = arr.toMatrix!(wild, 3, Major.column);
     assert(r3 == r1);
 
-    auto r4 = arr.toMatrix!(2, 0, Major.column);
+    auto r4 = arr.toMatrix!(2, wild, Major.column);
     assert(equal(r4.transpose.toFlatten, [0, 1, 2, 3, 4, 5]));
 
-    auto r5 = arr.toMatrix!(0, 0, Major.column);
+    auto r5 = arr.toMatrix!(wild, wild, Major.column);
     assert(r5 == r1);
 }
 
 
-
 /**
-インターフェース
+単位行列
 */
-interface IMatrix(T, size_t r, size_t c)
-{
-  static if(r != wild)
-    enum rlength = r;
-  else
-    @property size_t rlength();
-
-  static if(c != wild)
-    enum clength = c;
-  else
-    @property size_t clength();
-
-    T opIndex(size_t i, size_t j)
-    in{
-        assert(i < rlength || rlength == 0);
-        assert(j < clength || clength == 0);
-    }
-}
-
-
-
-/**
-参照型オブジェクトにして返します。
-*/
-auto toInterface(A)(A mat)
-if(isMatrix!A)
-{
-    alias ElementType!A E;
-
-  static if(hasStaticRows!A)
-    enum srlength = A.rlength;
-  else
-    enum srlength = wild;
-
-  static if(hasStaticColumns!A)
-    enum sclength = A.clength;
-  else
-    enum sclength = wild;
-
-    alias Interface = IMatrix!(E, srlength, sclength);
-
-    static class MatrixObj() : Interface
-    {
-        this(A mat)
-        {
-            _mat = mat;
-        }
-
-
-        E opIndex(size_t i, size_t j)
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return _mat[i, j];
-        }
-
-
-      static if(srlength == wild)
-        @property size_t rlength(){ return _mat.rlength; }
-
-      static if(sclength == wild)
-        @property size_t clength(){ return _mat.clength; }
-
-
-      private:
-        A _mat;
-    }
-
-
-    return cast(Interface)(new MatrixObj!()(mat));
-}
-
-unittest
-{
-    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
-    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
-
-    Matrix!(int, 3, 3) a;
-    auto i = toInterface(a);
-    static assert(isMatrix!(typeof(i)));
-    static assert(hasStaticRows!(typeof(i)));
-    static assert(hasStaticColumns!(typeof(i)));
-}
-
-
-
-
-/**
-単位行列を作ります。
-*/
-auto identity(E, size_t r, size_t c = r)()
-if(isScalar!E && r == c && r != wild)
+@property
+auto identity(E)()if(isScalar!E)
 {
     static struct Identity()
     {
-        enum rlength = r;
-        enum clength = c;
+        enum rlength = wild;
+        enum clength = wild;
+
+
+        static InferredResult inferSize(size_t i, size_t j)
+        {
+            if(i == wild && j == wild)
+                return InferredResult(false);
+            else if(i == wild || j == wild)
+                return InferredResult(true, max(i, j), max(i, j));
+            else if(i == j)
+                return InferredResult(true, i, j);
+            else
+                return InferredResult(false);
+        }
 
 
         E opIndex(size_t i, size_t j) inout
@@ -2116,81 +2706,50 @@ if(isScalar!E && r == c && r != wild)
             return (i == j) ? (cast(E)1) : (cast(E)0);
         }
 
-        mixin(defaultExprOps(r, c));
+        mixin(defaultExprOps!(true));
     }
 
     return Identity!()();
 }
-
-
-///ditto
-auto identity(E)(size_t r, size_t c)
-if(isScalar!E)
-in{
-    assert(r == c && r != 0);
-}
-body{
-    static struct Identity()
-    {
-        immutable size_t rlength;
-        immutable size_t clength;
-
-
-        E opIndex(size_t i, size_t j) inout
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return (i == j) ? (cast(E)1) : (cast(E)0);
-        }
-
-        mixin(defaultExprOps(wild, wild));
-    }
-
-    return Identity!()(r, c);
-}
-
-
-///ditto
-auto identity(E)(size_t r)
-if(isScalar!E)
-{
-    return identity!E(r, r);
-}
-
-
 unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
-    auto id2 = identity!(int, 2);
-    Matrix!(int, 2, 2) m1;
-    (a => a.put([0, 1, 2, 3]))(m1.reference.toFlatten);
-    assert(equal((m1 * id2).toFlatten, [0, 1, 2, 3]));
 
+    auto id = identity!int;
 
-    auto idd = identity!(int)(2);
-    assert(equal((m1 * idd).toFlatten, [0, 1, 2, 3]));
+    static assert(typeof(id).inferSize(4, 4).isValid);
+    static assert(!typeof(id).inferSize(1, 3).isValid);
 
-    auto id22 = id2 + idd;
-    assert(equal(id22.toFlatten, [2, 0, 0, 2]));
+    auto m1 = Matrix!(int, 2, 2).init;
+    m1.array[] = [0, 1, 2, 3];
+    assert(equal((m1 * id).toFlatten, [0, 1, 2, 3]));
 
-    m1.noAlias() = id2;
-    assert(m1.reference.toFlatten.equal([1, 0, 0, 1]));
+    auto id2 = id + id;
+    static assert(isMatrix!(typeof(id2)));
+    static assert(typeof(id2).inferSize(4, 4).isValid);
+
+    auto id3 = id.congeal!(wild, 2) * id;
+    static assert(id3.rlength == 2);
+    static assert(id3.clength == 2);
+    assert(equal(id3.toFlatten, [1, 0, 0, 1]));
+
+    auto ins = id2.congeal!(2, 2);
+    static assert(isMatrix!(typeof(ins)));
+    assert(equal(ins.toFlatten, [2, 0, 0, 2]));
 }
 
 
 /**
 全要素が1な行列を返します。
 */
-auto ones(E, size_t r, size_t c = r)()
-if(isScalar!E && r != wild && c != wild)
+@property
+auto ones(E)()if(isScalar!E)
 {
     static struct Ones()
     {
-        enum rlength = r;
-        enum clength = c;
+        enum rlength = wild;
+        enum clength = wild;
 
 
         E opIndex(size_t i, size_t j) inout
@@ -2198,154 +2757,153 @@ if(isScalar!E && r != wild && c != wild)
             return cast(E)1;
         }
 
-        mixin(defaultExprOps(r, c));
+
+        static InferredResult inferSize(size_t i, size_t j)
+        {
+            if(i == wild && j == wild)
+                return InferredResult(false);
+            else if(i == wild || j == wild)
+                return InferredResult(true, max(i, j), max(i, j));
+            else
+                return InferredResult(true, i, j);
+        }
+
+
+        //mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);
+        mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);
+        const{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);}
+        immutable{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);}
+
+
+        auto opBinary(string op : "*", S)(S s) const
+        if(isScalar!S)
+        {
+            return Ns!S(s);
+        }
+
+
+        auto opBinaryRight(string op : "*", S)(S s) const
+        if(isScalar!S)
+        {
+            return Ns!S(s);
+        }
     }
 
-    return Ones!()();
-}
-
-
-///ditto
-auto ones(E)(size_t r, size_t c)
-if(isScalar!E)
-in{
-    assert(r != wild && c != 0);
-}
-body{
-    static struct Ones()
+    static struct Ns(E)
     {
-        immutable size_t rlength;
-        immutable size_t clength;
+        enum rlength = 0;
+        enum clength = 0;
 
 
         E opIndex(size_t i, size_t j) inout
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            return cast(E)1;
+        {
+            return e;
         }
 
-        mixin(defaultExprOps(wild, wild));
+
+        static InferredResult inferSize(size_t i, size_t j)
+        {
+            if(i == wild && j == wild)
+                return InferredResult(false);
+            else if(i == wild || j == wild)
+                return InferredResult(true, max(i, j), max(i, j));
+            else
+                return InferredResult(true, i, j);
+        }
+
+
+        mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);
+        const{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);}
+        immutable{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString & ~ETOSpec.matrixMulScalar & ~ETOSpec.scalarMulMatrix).stringMixin);}
+
+
+        auto opBinary(string op : "*", S)(S s) const
+        if(isScalar!S && is(typeof(s * e)))
+        {
+            return Ns!(typeof(e * s))(e * s);
+        }
+
+
+        auto opBinaryRight(string op : "*", S)(S s) const
+        if(isScalar!S && is(typeof(s * e)))
+        {
+            return Ns!(typeof(e * s))(s * e);
+        }
+
+
+      private:
+        E e;
     }
 
-    return Ones!()(r, c);
+    static assert(isMatrix!(Ones!()));
+
+    return Ones!().init;
 }
-
-
-///ditto
-auto ones(E)(size_t r)
-if(isScalar!E)
-{
-    return ones!E(r, r);
-}
-
 unittest{
-    scope(failure) writefln("Unittest failure : ", __FILE__, " : ", __LINE__);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
 
-    auto on2 = ones!(int, 2);
-    Matrix!(int, 2, 2) m1;
-    (a => a.put([0, 1, 2, 3]))(m1.reference.toFlatten);
-    assert(equal((m1 * on2).toFlatten, [1, 1, 5, 5]));
 
+    auto m1 = ones!float;
+    assert(m1[0, 1] == 1);
 
-    auto ond = ones!(int)(2);
-    assert(equal((m1 * ond).toFlatten, [1, 1, 5, 5]));
+    auto m3 = m1 * 3;
+    assert(m3[0, 1] == 3);
 
-    auto on22 = on2 + ond;
-    assert(equal(on22.toFlatten, [2, 2, 2, 2]));
-
-    m1.noAlias() = on2;
-    assert(m1.reference.toFlatten.equal([1, 1, 1, 1]));
+    auto m9 = m3 * 3;
+    assert(m9[0, 1] == 9);
 }
 
-/+
+
 /**
 部分行列を返します
 */
 auto sub(alias rArray, alias cArray, A)(A mat)
-if(isArray!(typeof(rArray)) && isArray!(typeof(cArray)) && isMatrix!A)
-{
-    static assert(rArray.length != 0 || (A.rlength == 0 && hasConstraintSize!A));
-    static assert(cArray.length != 0 || (A.clength == 0 && hasConstraintSize!A));
-
-    static assert(A.rlength == 0 || rArray.find!"a>=b"(A.rlength).empty);
-    static assert(A.clength == 0 || cArray.find!"a>=b"(A.clength).empty);
-
+if(isArray!(typeof(rArray)) && isArray!(typeof(cArray)) && isMatrix!A && !isInferableMatrix!A
+    && (hasDynamicRows!A || is(typeof({static assert(rArray.find!"a>=b"(A.rlength).empty);})))
+    && (hasDynamicColumns!A || is(typeof({static assert(cArray.find!"a>=b"(A.clength).empty);}))))
+in{
+    static if(hasDynamicRows!A)
+        assert(rArray.find!"a>=b"(mat.rlength).empty);
+    static if(hasDynamicColumns!A)
+        assert(cArray.find!"a>=b"(mat.clength).empty);
+}
+body{
   static if(rArray.length == 0 && cArray.length == 0)
     return mat;
   else
   {
     static struct Sub()
     {
+      static if(rArray.length == 0)
+        alias rlength = _mat.rlength;
+      else
         enum rlength = rArray.length;
+
+      static if(cArray.length == 0)
+        alias clength = _mat.clength;
+      else
         enum clength = cArray.length;
 
 
-        auto ref opIndex(size_t i, size_t j)
+        auto ref opIndex(size_t i, size_t j) inout
         in{
             assert(i < rlength);
             assert(j < clength);
         }
         body{
-            static if(rlength != 0 && clength != 0)
+          static if(rArray.length && cArray.length)
             return _mat[rArray[i], cArray[j]];
-          else static if(rlength != 0)
+          else static if(rArray.length)
             return _mat[rArray[i], j];
-          else
+          else static if(cArray.length)
             return _mat[i, cArray[j]];
-        }
-
-
-        auto ref opIndex(size_t i, size_t j) const
-        in{
-            assert(i < rlength || rlength == 0);
-            assert(j < clength || clength == 0);
-        }
-        body{
-          static if(rlength != 0 && clength != 0)
-            return _mat[rArray[i], cArray[j]];
-          else static if(rlength != 0)
-            return _mat[rArray[i], j];
           else
-            return _mat[i, cArray[j]];
+            static assert(0);
         }
 
 
-        auto ref opIndex(size_t i, size_t j) immutable
-        in{
-            assert(i < rlength);
-            assert(j < clength);
-        }
-        body{
-            static if(rlength != 0 && clength != 0)
-            return _mat[rArray[i], cArray[j]];
-          else static if(rlength != 0)
-            return _mat[rArray[i], j];
-          else
-            return _mat[i, cArray[j]];
-        }
-
-
-        mixin ExpressionTemplateOperators!(ETOSpec.all);
-        static if(is(typeof(_opIndex)))
-            mixin(_opIndex);
-
-
-        static if(rlength == 0 || clength == 0)
-        static struct CheckSize(size_t i, size_t j)
-        {
-            enum isValid = isEqOrEitherEq0(i, Sub.rlength)
-                        && isEqOrEitherEq0(j, Sub.clength);
-
-            static if(isValid)
-            {
-                enum rlength = i == 0 ? Sub.rlength : i;
-                enum clength = j == 0 ? Sub.clength : j;
-            }
-        }
+        mixin(defaultExprOps!(false));
 
 
       private:
@@ -2356,6 +2914,10 @@ if(isArray!(typeof(rArray)) && isArray!(typeof(cArray)) && isMatrix!A)
   }
 }
 unittest{
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
     auto m1 = [[0, 1], [2, 3], [4, 5]].toMatrix!(3, 2, Major.row);
     auto s1 = m1.sub!([1, 2], [0]);
     static assert(s1.rlength == 2);
@@ -2365,18 +2927,13 @@ unittest{
     assert(s1[1, 0] == 4);
 
 
-    auto m2 = [[0, 1], [2, 3], [4, 5]].toMatrix!(0, 0, Major.row);
+    auto m2 = [[0, 1], [2, 3], [4, 5]].toMatrix!(0, 0, Major.row)();
     auto s2 = sub!((size_t[]).init, (size_t[]).init)(m2);
-    assert(m1 == s2.instantiate!(3, 2));
+    assert(m1 == s2.congeal!(3, 2));
 
 
-    auto m3 = sub!([0, 0, 0], [0, 0])(identity!float);
-    assert(m3 == ones!float);
-
-
-    auto m4 = sub!([0], (size_t[]).init)(identity!float);
-    static assert(m4.CheckSize!(1, 3).isValid);
-    static assert(!m4.CheckSize!(3, 3).isValid);
+    auto m3 = identity!int.congeal!(2, 2)().sub!([0, 0, 0], [0, 0, 0])();
+    assert(m3 == ones!int);
 }
 
 
@@ -2408,7 +2965,11 @@ if(isMatrix!A)
     return sub!(arrGen(r, A.rlength), arrGen(c, A.clength))(mat);
 }
 unittest{
-    auto a = swizzle!("abab", "baba")(identity!int);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    auto a = identity!int.congeal!(2, 2).swizzle!("abab", "baba")();
     assert(equal!"equal(a, b)"(a.toRange, [[0, 1, 0, 1],
                                            [1, 0, 1, 0],
                                            [0, 1, 0, 1],
@@ -2424,18 +2985,23 @@ unittest{
 /**
 行列の跡(trace)を返します。正方行列についてのみ定義されます
 */
-@property
 ElementType!A trace(A)(A mat)
-if(isMatrix!A && (!hasConstraintSize!A && A.rlength == A.clength))
+if(isMatrix!A && !isInferableMatrix!A && (!(hasStaticRows!A && hasStaticColumns!A) || is(typeof({static assert(A.rlength == A.clength);}))))
 {
     alias ElementType!A T;
     T sum = cast(T)0;
-    foreach(i; 0 .. A.rlength)
+
+    foreach(i; 0 .. mat.rlength)
         sum += mat[i, i];
+
     return sum;
 }
 unittest{
-    auto m = matrix!(2, 2, int)();
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    auto m = Matrix!(int, 2, 2)();
     m[0, 0] = 0; m[0, 1] = 1;
     m[1, 0] = 2; m[1, 1] = 3;
 
@@ -2444,38 +3010,33 @@ unittest{
 }
 
 
-
-///ditto
-@property
-ElementType!A trace(size_t rc, A)(A mat)
-if(isMatrix!A && hasConstraintSize!A)
-{
-    static assert(A.CheckSize!(rc, rc).isValid);
-    return mat.instantiate!(rc, rc).trace;
-}
-
-
 auto dot(V1, V2)(V1 vec1, V2 vec2)
-if(isVector!V1 && isVector!V2)
-{
-    static if(V1.rlength == 1)
+if(isVector!V1 && isVector!V2 && (!(hasStaticLength!V1 && hasStaticLength!V2) || is(typeof({static assert(V1.length == V2.length);}))))
+in{
+    static if(!(hasStaticLength!V1 && hasStaticLength!V2))
     {
-        static if(V2.clength == 1)
-            return (vec1 * vec2)[0];
-        else
-            return (vec1 * vec2.transpose)[0];
+        assert(vec1.length == vec2.length);
     }
-    else
-    {
-        static if(V2.rlength == 1)
-            return (vec2 * vec1)[0];    //vec1.transpose * vec2.tranpose == vec2 * vec1
-        else
-            return (vec1.transpose * vec2)[0];
-    }
+}
+body{
+    alias ElementType!V1 T;
+    T sum = cast(T)0;
+
+    foreach(i; 0 .. vec1.length)
+        sum += vec1[i] * vec2[i];
+
+    return sum;
 }
 unittest{
-    auto rv = rvector!3([0, 1, 2][]),
-         cv = cvector!3([1, 2, 3][]);
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
+    auto rv = Rvector!(int, 3)(),
+         cv = Cvector!(int, 3)();
+
+    rv.array[] = [0, 1, 2];
+    cv.array[] = [1, 2, 3];
 
     assert((rv * cv)[0] == 8);  //8
     assert(rv.dot(cv) == 8);
@@ -2498,8 +3059,8 @@ if(isVector!V1 && isVector!V2)
 {
     static struct Cartesian()
     {
-        enum rlength = V1.length;
-        enum clength = V2.length;
+        alias rlength = _vec1.length;
+        alias clength = _vec2.length;
 
 
         auto opIndex(size_t i, size_t j){ return _vec1[i] * _vec2[j]; }
@@ -2531,1088 +3092,14 @@ if(isVector!V1 && isVector!V2)
     return Cartesian!()(vec1, vec2);
 }
 unittest{
+    scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+    scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
+
+
     auto v1 = [0, 1, 2, 3].toMatrix!(3, 1);
     auto v2 = [2, 3, 4, 5].toMatrix!(1, 2);
 
     assert(v1.cartesian(v2) == v1 * v2);
+    static assert(hasStaticRows!(typeof(v1.cartesian(v2))));
+    static assert(hasStaticColumns!(typeof(v1.cartesian(v2))));
 }
-
-
-/**
-matrix!(...)で生成される型です。
-フォーマットは、
-Matrix(R)x(C)(Type)(Major)
-となっており、
-1 <= R <= 4
-1 <= C <= 4
-
-Type : int -> "i"
-       uint -> "ui"
-       ...
-       float -> "f"
-       cfloat -> "cf"
-       ...
-Major : "" <- デフォルト
-        "r"　<- 行優先
-        "c" <- 列優先
-
-さらにR == Cのときは
-Matrix(R)(Type)(Major)
-
-R == 1のときは行ベクトルなので
-Rvector(C)(Type)(Major)
-
-C == 1のときは列ベクトルなので
-Cvector(R)(Type)(Major)
-
-とも定義されます。
-*/
-/*
-import std.stdio;
-
-void main(){
-  writeln(genTypes);
-}
-
-auto genTypes(){
-    import std.string;
-
-    string[][] range(string[string] hstr)
-    {
-        typeof(return) dst;
-        foreach(k, v; hstr)
-            dst ~= [k, v];
-        return dst;
-    }
-
-
-    string str;
-
-    auto sf = ["byte" : "b",
-               "ubyte" : "ub",
-               "short" : "s",
-               "ushort" : "us",
-               "int" : "i",
-               "uint" : "ui",
-               "long" : "l",
-               "ulong" : "ul",
-               "float" : "f",
-               "double" : "d",
-               "real" : "r",
-               "cfloat" : "cf",
-               "cdouble" : "cd",
-               "creal" : "cr"];
-
-    
-    auto dim = [[1, 1], [1, 2], [1, 3], [1, 4],
-                [2, 1], [2, 2], [2, 3], [2, 4],
-                [3, 1], [3, 2], [3, 3], [3, 4],
-                [4, 1], [4, 2], [4, 3], [4, 4]];
-
-    auto kv = range(sf);
-    auto rc = [ ["defaultMajor", ""],
-                ["Major.row", "r"],
-                ["Major.column", "c"]
-                ];
-
-    foreach(d; dim)
-        foreach(k; kv)
-            foreach(r; rc)
-            {
-                if(d[0] == 1 && d[1] == 1)
-                    continue;
-
-                str ~= xformat(q{alias Matrix%1$sx%2$s%3$s%4$s = typeof(matrix!(%1$s, %2$s, %5$s, %6$s));} ~ "\n",
-                                      d[0], d[1], k[1], r[1], k[0], r[0]);
-
-                if(d[0] == d[1]){
-                    str ~= xformat(q{alias Matrix%1$s%3$s%4$s = typeof(matrix!(%1$s, %2$s, %5$s, %6$s));} ~ "\n",
-                                      d[0], d[1], k[1], r[1], k[0], r[0]);
-                }
-
-                if(r[1] == "c" && d[1] == 1){
-                    str ~= xformat(q{alias Cvector%1$s%2$s = typeof(matrix!(%1$s, 1, %3$s, %4$s));} ~ "\n",
-                                           d[0], k[1], k[0], r[0]);
-                }
-
-                if(r[1] == "r" && d[0] == 1){
-                    str ~= xformat(q{alias Rvector%1$s%2$s = typeof(matrix!(1, %1$s, %3$s, %4$s));} ~ "\n",
-                                           d[1], k[1], k[0], r[0]);
-                }
-            }
-    return str;
-}
-
-mixin(genTypes());
-*/
-template Matrix(T, size_t r, size_t c, Major mjr = defaultMajor)
-{
-    alias Matrix = typeof(matrix!(r, c, T, mjr));
-}
-
-
-template Rvector(T, size_t c)
-{
-    alias Rvector = typeof(matrix!(T, 1, c, Major.row));
-}
-
-
-template Cvector(T, size_t r)
-{
-    alias Cvector = typeof(matrix!(T, r, 1, Major.column));
-}
-
-
-alias Matrix1x1ui = typeof(matrix!(1, 1, uint, defaultMajor));
-alias Matrix1ui = typeof(matrix!(1, 1, uint, defaultMajor));
-alias Matrix1x1uir = typeof(matrix!(1, 1, uint, Major.row));
-alias Matrix1uir = typeof(matrix!(1, 1, uint, Major.row));
-alias Rvector1ui = typeof(matrix!(1, 1, uint, Major.row));
-alias Matrix1x1uic = typeof(matrix!(1, 1, uint, Major.column));
-alias Matrix1uic = typeof(matrix!(1, 1, uint, Major.column));
-alias Cvector1ui = typeof(matrix!(1, 1, uint, Major.column));
-alias Matrix1x1f = typeof(matrix!(1, 1, float, defaultMajor));
-alias Matrix1f = typeof(matrix!(1, 1, float, defaultMajor));
-alias Matrix1x1fr = typeof(matrix!(1, 1, float, Major.row));
-alias Matrix1fr = typeof(matrix!(1, 1, float, Major.row));
-alias Rvector1f = typeof(matrix!(1, 1, float, Major.row));
-alias Matrix1x1fc = typeof(matrix!(1, 1, float, Major.column));
-alias Matrix1fc = typeof(matrix!(1, 1, float, Major.column));
-alias Cvector1f = typeof(matrix!(1, 1, float, Major.column));
-alias Matrix1x1s = typeof(matrix!(1, 1, short, defaultMajor));
-alias Matrix1s = typeof(matrix!(1, 1, short, defaultMajor));
-alias Matrix1x1sr = typeof(matrix!(1, 1, short, Major.row));
-alias Matrix1sr = typeof(matrix!(1, 1, short, Major.row));
-alias Rvector1s = typeof(matrix!(1, 1, short, Major.row));
-alias Matrix1x1sc = typeof(matrix!(1, 1, short, Major.column));
-alias Matrix1sc = typeof(matrix!(1, 1, short, Major.column));
-alias Cvector1s = typeof(matrix!(1, 1, short, Major.column));
-alias Matrix1x1d = typeof(matrix!(1, 1, double, defaultMajor));
-alias Matrix1d = typeof(matrix!(1, 1, double, defaultMajor));
-alias Matrix1x1dr = typeof(matrix!(1, 1, double, Major.row));
-alias Matrix1dr = typeof(matrix!(1, 1, double, Major.row));
-alias Rvector1d = typeof(matrix!(1, 1, double, Major.row));
-alias Matrix1x1dc = typeof(matrix!(1, 1, double, Major.column));
-alias Matrix1dc = typeof(matrix!(1, 1, double, Major.column));
-alias Cvector1d = typeof(matrix!(1, 1, double, Major.column));
-alias Matrix1x1cf = typeof(matrix!(1, 1, cfloat, defaultMajor));
-alias Matrix1cf = typeof(matrix!(1, 1, cfloat, defaultMajor));
-alias Matrix1x1cfr = typeof(matrix!(1, 1, cfloat, Major.row));
-alias Matrix1cfr = typeof(matrix!(1, 1, cfloat, Major.row));
-alias Rvector1cf = typeof(matrix!(1, 1, cfloat, Major.row));
-alias Matrix1x1cfc = typeof(matrix!(1, 1, cfloat, Major.column));
-alias Matrix1cfc = typeof(matrix!(1, 1, cfloat, Major.column));
-alias Cvector1cf = typeof(matrix!(1, 1, cfloat, Major.column));
-alias Matrix1x1ub = typeof(matrix!(1, 1, ubyte, defaultMajor));
-alias Matrix1ub = typeof(matrix!(1, 1, ubyte, defaultMajor));
-alias Matrix1x1ubr = typeof(matrix!(1, 1, ubyte, Major.row));
-alias Matrix1ubr = typeof(matrix!(1, 1, ubyte, Major.row));
-alias Rvector1ub = typeof(matrix!(1, 1, ubyte, Major.row));
-alias Matrix1x1ubc = typeof(matrix!(1, 1, ubyte, Major.column));
-alias Matrix1ubc = typeof(matrix!(1, 1, ubyte, Major.column));
-alias Cvector1ub = typeof(matrix!(1, 1, ubyte, Major.column));
-alias Matrix1x1b = typeof(matrix!(1, 1, byte, defaultMajor));
-alias Matrix1b = typeof(matrix!(1, 1, byte, defaultMajor));
-alias Matrix1x1br = typeof(matrix!(1, 1, byte, Major.row));
-alias Matrix1br = typeof(matrix!(1, 1, byte, Major.row));
-alias Rvector1b = typeof(matrix!(1, 1, byte, Major.row));
-alias Matrix1x1bc = typeof(matrix!(1, 1, byte, Major.column));
-alias Matrix1bc = typeof(matrix!(1, 1, byte, Major.column));
-alias Cvector1b = typeof(matrix!(1, 1, byte, Major.column));
-alias Matrix1x1cr = typeof(matrix!(1, 1, creal, defaultMajor));
-alias Matrix1cr = typeof(matrix!(1, 1, creal, defaultMajor));
-alias Matrix1x1crr = typeof(matrix!(1, 1, creal, Major.row));
-alias Matrix1crr = typeof(matrix!(1, 1, creal, Major.row));
-alias Rvector1cr = typeof(matrix!(1, 1, creal, Major.row));
-alias Matrix1x1crc = typeof(matrix!(1, 1, creal, Major.column));
-alias Matrix1crc = typeof(matrix!(1, 1, creal, Major.column));
-alias Cvector1cr = typeof(matrix!(1, 1, creal, Major.column));
-alias Matrix1x1i = typeof(matrix!(1, 1, int, defaultMajor));
-alias Matrix1i = typeof(matrix!(1, 1, int, defaultMajor));
-alias Matrix1x1ir = typeof(matrix!(1, 1, int, Major.row));
-alias Matrix1ir = typeof(matrix!(1, 1, int, Major.row));
-alias Rvector1i = typeof(matrix!(1, 1, int, Major.row));
-alias Matrix1x1ic = typeof(matrix!(1, 1, int, Major.column));
-alias Matrix1ic = typeof(matrix!(1, 1, int, Major.column));
-alias Cvector1i = typeof(matrix!(1, 1, int, Major.column));
-alias Matrix1x1ul = typeof(matrix!(1, 1, ulong, defaultMajor));
-alias Matrix1ul = typeof(matrix!(1, 1, ulong, defaultMajor));
-alias Matrix1x1ulr = typeof(matrix!(1, 1, ulong, Major.row));
-alias Matrix1ulr = typeof(matrix!(1, 1, ulong, Major.row));
-alias Rvector1ul = typeof(matrix!(1, 1, ulong, Major.row));
-alias Matrix1x1ulc = typeof(matrix!(1, 1, ulong, Major.column));
-alias Matrix1ulc = typeof(matrix!(1, 1, ulong, Major.column));
-alias Cvector1ul = typeof(matrix!(1, 1, ulong, Major.column));
-alias Matrix1x1l = typeof(matrix!(1, 1, long, defaultMajor));
-alias Matrix1l = typeof(matrix!(1, 1, long, defaultMajor));
-alias Matrix1x1lr = typeof(matrix!(1, 1, long, Major.row));
-alias Matrix1lr = typeof(matrix!(1, 1, long, Major.row));
-alias Rvector1l = typeof(matrix!(1, 1, long, Major.row));
-alias Matrix1x1lc = typeof(matrix!(1, 1, long, Major.column));
-alias Matrix1lc = typeof(matrix!(1, 1, long, Major.column));
-alias Cvector1l = typeof(matrix!(1, 1, long, Major.column));
-alias Matrix1x1us = typeof(matrix!(1, 1, ushort, defaultMajor));
-alias Matrix1us = typeof(matrix!(1, 1, ushort, defaultMajor));
-alias Matrix1x1usr = typeof(matrix!(1, 1, ushort, Major.row));
-alias Matrix1usr = typeof(matrix!(1, 1, ushort, Major.row));
-alias Rvector1us = typeof(matrix!(1, 1, ushort, Major.row));
-alias Matrix1x1usc = typeof(matrix!(1, 1, ushort, Major.column));
-alias Matrix1usc = typeof(matrix!(1, 1, ushort, Major.column));
-alias Cvector1us = typeof(matrix!(1, 1, ushort, Major.column));
-alias Matrix1x1r = typeof(matrix!(1, 1, real, defaultMajor));
-alias Matrix1r = typeof(matrix!(1, 1, real, defaultMajor));
-alias Matrix1x1rr = typeof(matrix!(1, 1, real, Major.row));
-alias Matrix1rr = typeof(matrix!(1, 1, real, Major.row));
-alias Rvector1r = typeof(matrix!(1, 1, real, Major.row));
-alias Matrix1x1rc = typeof(matrix!(1, 1, real, Major.column));
-alias Matrix1rc = typeof(matrix!(1, 1, real, Major.column));
-alias Cvector1r = typeof(matrix!(1, 1, real, Major.column));
-alias Matrix1x1cd = typeof(matrix!(1, 1, cdouble, defaultMajor));
-alias Matrix1cd = typeof(matrix!(1, 1, cdouble, defaultMajor));
-alias Matrix1x1cdr = typeof(matrix!(1, 1, cdouble, Major.row));
-alias Matrix1cdr = typeof(matrix!(1, 1, cdouble, Major.row));
-alias Rvector1cd = typeof(matrix!(1, 1, cdouble, Major.row));
-alias Matrix1x1cdc = typeof(matrix!(1, 1, cdouble, Major.column));
-alias Matrix1cdc = typeof(matrix!(1, 1, cdouble, Major.column));
-alias Cvector1cd = typeof(matrix!(1, 1, cdouble, Major.column));
-alias Matrix1x2ui = typeof(matrix!(1, 2, uint, defaultMajor));
-alias Matrix1x2uir = typeof(matrix!(1, 2, uint, Major.row));
-alias Rvector2ui = typeof(matrix!(1, 2, uint, Major.row));
-alias Matrix1x2uic = typeof(matrix!(1, 2, uint, Major.column));
-alias Matrix1x2f = typeof(matrix!(1, 2, float, defaultMajor));
-alias Matrix1x2fr = typeof(matrix!(1, 2, float, Major.row));
-alias Rvector2f = typeof(matrix!(1, 2, float, Major.row));
-alias Matrix1x2fc = typeof(matrix!(1, 2, float, Major.column));
-alias Matrix1x2s = typeof(matrix!(1, 2, short, defaultMajor));
-alias Matrix1x2sr = typeof(matrix!(1, 2, short, Major.row));
-alias Rvector2s = typeof(matrix!(1, 2, short, Major.row));
-alias Matrix1x2sc = typeof(matrix!(1, 2, short, Major.column));
-alias Matrix1x2d = typeof(matrix!(1, 2, double, defaultMajor));
-alias Matrix1x2dr = typeof(matrix!(1, 2, double, Major.row));
-alias Rvector2d = typeof(matrix!(1, 2, double, Major.row));
-alias Matrix1x2dc = typeof(matrix!(1, 2, double, Major.column));
-alias Matrix1x2cf = typeof(matrix!(1, 2, cfloat, defaultMajor));
-alias Matrix1x2cfr = typeof(matrix!(1, 2, cfloat, Major.row));
-alias Rvector2cf = typeof(matrix!(1, 2, cfloat, Major.row));
-alias Matrix1x2cfc = typeof(matrix!(1, 2, cfloat, Major.column));
-alias Matrix1x2ub = typeof(matrix!(1, 2, ubyte, defaultMajor));
-alias Matrix1x2ubr = typeof(matrix!(1, 2, ubyte, Major.row));
-alias Rvector2ub = typeof(matrix!(1, 2, ubyte, Major.row));
-alias Matrix1x2ubc = typeof(matrix!(1, 2, ubyte, Major.column));
-alias Matrix1x2b = typeof(matrix!(1, 2, byte, defaultMajor));
-alias Matrix1x2br = typeof(matrix!(1, 2, byte, Major.row));
-alias Rvector2b = typeof(matrix!(1, 2, byte, Major.row));
-alias Matrix1x2bc = typeof(matrix!(1, 2, byte, Major.column));
-alias Matrix1x2cr = typeof(matrix!(1, 2, creal, defaultMajor));
-alias Matrix1x2crr = typeof(matrix!(1, 2, creal, Major.row));
-alias Rvector2cr = typeof(matrix!(1, 2, creal, Major.row));
-alias Matrix1x2crc = typeof(matrix!(1, 2, creal, Major.column));
-alias Matrix1x2i = typeof(matrix!(1, 2, int, defaultMajor));
-alias Matrix1x2ir = typeof(matrix!(1, 2, int, Major.row));
-alias Rvector2i = typeof(matrix!(1, 2, int, Major.row));
-alias Matrix1x2ic = typeof(matrix!(1, 2, int, Major.column));
-alias Matrix1x2ul = typeof(matrix!(1, 2, ulong, defaultMajor));
-alias Matrix1x2ulr = typeof(matrix!(1, 2, ulong, Major.row));
-alias Rvector2ul = typeof(matrix!(1, 2, ulong, Major.row));
-alias Matrix1x2ulc = typeof(matrix!(1, 2, ulong, Major.column));
-alias Matrix1x2l = typeof(matrix!(1, 2, long, defaultMajor));
-alias Matrix1x2lr = typeof(matrix!(1, 2, long, Major.row));
-alias Rvector2l = typeof(matrix!(1, 2, long, Major.row));
-alias Matrix1x2lc = typeof(matrix!(1, 2, long, Major.column));
-alias Matrix1x2us = typeof(matrix!(1, 2, ushort, defaultMajor));
-alias Matrix1x2usr = typeof(matrix!(1, 2, ushort, Major.row));
-alias Rvector2us = typeof(matrix!(1, 2, ushort, Major.row));
-alias Matrix1x2usc = typeof(matrix!(1, 2, ushort, Major.column));
-alias Matrix1x2r = typeof(matrix!(1, 2, real, defaultMajor));
-alias Matrix1x2rr = typeof(matrix!(1, 2, real, Major.row));
-alias Rvector2r = typeof(matrix!(1, 2, real, Major.row));
-alias Matrix1x2rc = typeof(matrix!(1, 2, real, Major.column));
-alias Matrix1x2cd = typeof(matrix!(1, 2, cdouble, defaultMajor));
-alias Matrix1x2cdr = typeof(matrix!(1, 2, cdouble, Major.row));
-alias Rvector2cd = typeof(matrix!(1, 2, cdouble, Major.row));
-alias Matrix1x2cdc = typeof(matrix!(1, 2, cdouble, Major.column));
-alias Matrix1x3ui = typeof(matrix!(1, 3, uint, defaultMajor));
-alias Matrix1x3uir = typeof(matrix!(1, 3, uint, Major.row));
-alias Rvector3ui = typeof(matrix!(1, 3, uint, Major.row));
-alias Matrix1x3uic = typeof(matrix!(1, 3, uint, Major.column));
-alias Matrix1x3f = typeof(matrix!(1, 3, float, defaultMajor));
-alias Matrix1x3fr = typeof(matrix!(1, 3, float, Major.row));
-alias Rvector3f = typeof(matrix!(1, 3, float, Major.row));
-alias Matrix1x3fc = typeof(matrix!(1, 3, float, Major.column));
-alias Matrix1x3s = typeof(matrix!(1, 3, short, defaultMajor));
-alias Matrix1x3sr = typeof(matrix!(1, 3, short, Major.row));
-alias Rvector3s = typeof(matrix!(1, 3, short, Major.row));
-alias Matrix1x3sc = typeof(matrix!(1, 3, short, Major.column));
-alias Matrix1x3d = typeof(matrix!(1, 3, double, defaultMajor));
-alias Matrix1x3dr = typeof(matrix!(1, 3, double, Major.row));
-alias Rvector3d = typeof(matrix!(1, 3, double, Major.row));
-alias Matrix1x3dc = typeof(matrix!(1, 3, double, Major.column));
-alias Matrix1x3cf = typeof(matrix!(1, 3, cfloat, defaultMajor));
-alias Matrix1x3cfr = typeof(matrix!(1, 3, cfloat, Major.row));
-alias Rvector3cf = typeof(matrix!(1, 3, cfloat, Major.row));
-alias Matrix1x3cfc = typeof(matrix!(1, 3, cfloat, Major.column));
-alias Matrix1x3ub = typeof(matrix!(1, 3, ubyte, defaultMajor));
-alias Matrix1x3ubr = typeof(matrix!(1, 3, ubyte, Major.row));
-alias Rvector3ub = typeof(matrix!(1, 3, ubyte, Major.row));
-alias Matrix1x3ubc = typeof(matrix!(1, 3, ubyte, Major.column));
-alias Matrix1x3b = typeof(matrix!(1, 3, byte, defaultMajor));
-alias Matrix1x3br = typeof(matrix!(1, 3, byte, Major.row));
-alias Rvector3b = typeof(matrix!(1, 3, byte, Major.row));
-alias Matrix1x3bc = typeof(matrix!(1, 3, byte, Major.column));
-alias Matrix1x3cr = typeof(matrix!(1, 3, creal, defaultMajor));
-alias Matrix1x3crr = typeof(matrix!(1, 3, creal, Major.row));
-alias Rvector3cr = typeof(matrix!(1, 3, creal, Major.row));
-alias Matrix1x3crc = typeof(matrix!(1, 3, creal, Major.column));
-alias Matrix1x3i = typeof(matrix!(1, 3, int, defaultMajor));
-alias Matrix1x3ir = typeof(matrix!(1, 3, int, Major.row));
-alias Rvector3i = typeof(matrix!(1, 3, int, Major.row));
-alias Matrix1x3ic = typeof(matrix!(1, 3, int, Major.column));
-alias Matrix1x3ul = typeof(matrix!(1, 3, ulong, defaultMajor));
-alias Matrix1x3ulr = typeof(matrix!(1, 3, ulong, Major.row));
-alias Rvector3ul = typeof(matrix!(1, 3, ulong, Major.row));
-alias Matrix1x3ulc = typeof(matrix!(1, 3, ulong, Major.column));
-alias Matrix1x3l = typeof(matrix!(1, 3, long, defaultMajor));
-alias Matrix1x3lr = typeof(matrix!(1, 3, long, Major.row));
-alias Rvector3l = typeof(matrix!(1, 3, long, Major.row));
-alias Matrix1x3lc = typeof(matrix!(1, 3, long, Major.column));
-alias Matrix1x3us = typeof(matrix!(1, 3, ushort, defaultMajor));
-alias Matrix1x3usr = typeof(matrix!(1, 3, ushort, Major.row));
-alias Rvector3us = typeof(matrix!(1, 3, ushort, Major.row));
-alias Matrix1x3usc = typeof(matrix!(1, 3, ushort, Major.column));
-alias Matrix1x3r = typeof(matrix!(1, 3, real, defaultMajor));
-alias Matrix1x3rr = typeof(matrix!(1, 3, real, Major.row));
-alias Rvector3r = typeof(matrix!(1, 3, real, Major.row));
-alias Matrix1x3rc = typeof(matrix!(1, 3, real, Major.column));
-alias Matrix1x3cd = typeof(matrix!(1, 3, cdouble, defaultMajor));
-alias Matrix1x3cdr = typeof(matrix!(1, 3, cdouble, Major.row));
-alias Rvector3cd = typeof(matrix!(1, 3, cdouble, Major.row));
-alias Matrix1x3cdc = typeof(matrix!(1, 3, cdouble, Major.column));
-alias Matrix1x4ui = typeof(matrix!(1, 4, uint, defaultMajor));
-alias Matrix1x4uir = typeof(matrix!(1, 4, uint, Major.row));
-alias Rvector4ui = typeof(matrix!(1, 4, uint, Major.row));
-alias Matrix1x4uic = typeof(matrix!(1, 4, uint, Major.column));
-alias Matrix1x4f = typeof(matrix!(1, 4, float, defaultMajor));
-alias Matrix1x4fr = typeof(matrix!(1, 4, float, Major.row));
-alias Rvector4f = typeof(matrix!(1, 4, float, Major.row));
-alias Matrix1x4fc = typeof(matrix!(1, 4, float, Major.column));
-alias Matrix1x4s = typeof(matrix!(1, 4, short, defaultMajor));
-alias Matrix1x4sr = typeof(matrix!(1, 4, short, Major.row));
-alias Rvector4s = typeof(matrix!(1, 4, short, Major.row));
-alias Matrix1x4sc = typeof(matrix!(1, 4, short, Major.column));
-alias Matrix1x4d = typeof(matrix!(1, 4, double, defaultMajor));
-alias Matrix1x4dr = typeof(matrix!(1, 4, double, Major.row));
-alias Rvector4d = typeof(matrix!(1, 4, double, Major.row));
-alias Matrix1x4dc = typeof(matrix!(1, 4, double, Major.column));
-alias Matrix1x4cf = typeof(matrix!(1, 4, cfloat, defaultMajor));
-alias Matrix1x4cfr = typeof(matrix!(1, 4, cfloat, Major.row));
-alias Rvector4cf = typeof(matrix!(1, 4, cfloat, Major.row));
-alias Matrix1x4cfc = typeof(matrix!(1, 4, cfloat, Major.column));
-alias Matrix1x4ub = typeof(matrix!(1, 4, ubyte, defaultMajor));
-alias Matrix1x4ubr = typeof(matrix!(1, 4, ubyte, Major.row));
-alias Rvector4ub = typeof(matrix!(1, 4, ubyte, Major.row));
-alias Matrix1x4ubc = typeof(matrix!(1, 4, ubyte, Major.column));
-alias Matrix1x4b = typeof(matrix!(1, 4, byte, defaultMajor));
-alias Matrix1x4br = typeof(matrix!(1, 4, byte, Major.row));
-alias Rvector4b = typeof(matrix!(1, 4, byte, Major.row));
-alias Matrix1x4bc = typeof(matrix!(1, 4, byte, Major.column));
-alias Matrix1x4cr = typeof(matrix!(1, 4, creal, defaultMajor));
-alias Matrix1x4crr = typeof(matrix!(1, 4, creal, Major.row));
-alias Rvector4cr = typeof(matrix!(1, 4, creal, Major.row));
-alias Matrix1x4crc = typeof(matrix!(1, 4, creal, Major.column));
-alias Matrix1x4i = typeof(matrix!(1, 4, int, defaultMajor));
-alias Matrix1x4ir = typeof(matrix!(1, 4, int, Major.row));
-alias Rvector4i = typeof(matrix!(1, 4, int, Major.row));
-alias Matrix1x4ic = typeof(matrix!(1, 4, int, Major.column));
-alias Matrix1x4ul = typeof(matrix!(1, 4, ulong, defaultMajor));
-alias Matrix1x4ulr = typeof(matrix!(1, 4, ulong, Major.row));
-alias Rvector4ul = typeof(matrix!(1, 4, ulong, Major.row));
-alias Matrix1x4ulc = typeof(matrix!(1, 4, ulong, Major.column));
-alias Matrix1x4l = typeof(matrix!(1, 4, long, defaultMajor));
-alias Matrix1x4lr = typeof(matrix!(1, 4, long, Major.row));
-alias Rvector4l = typeof(matrix!(1, 4, long, Major.row));
-alias Matrix1x4lc = typeof(matrix!(1, 4, long, Major.column));
-alias Matrix1x4us = typeof(matrix!(1, 4, ushort, defaultMajor));
-alias Matrix1x4usr = typeof(matrix!(1, 4, ushort, Major.row));
-alias Rvector4us = typeof(matrix!(1, 4, ushort, Major.row));
-alias Matrix1x4usc = typeof(matrix!(1, 4, ushort, Major.column));
-alias Matrix1x4r = typeof(matrix!(1, 4, real, defaultMajor));
-alias Matrix1x4rr = typeof(matrix!(1, 4, real, Major.row));
-alias Rvector4r = typeof(matrix!(1, 4, real, Major.row));
-alias Matrix1x4rc = typeof(matrix!(1, 4, real, Major.column));
-alias Matrix1x4cd = typeof(matrix!(1, 4, cdouble, defaultMajor));
-alias Matrix1x4cdr = typeof(matrix!(1, 4, cdouble, Major.row));
-alias Rvector4cd = typeof(matrix!(1, 4, cdouble, Major.row));
-alias Matrix1x4cdc = typeof(matrix!(1, 4, cdouble, Major.column));
-alias Matrix2x1ui = typeof(matrix!(2, 1, uint, defaultMajor));
-alias Matrix2x1uir = typeof(matrix!(2, 1, uint, Major.row));
-alias Matrix2x1uic = typeof(matrix!(2, 1, uint, Major.column));
-alias Cvector2ui = typeof(matrix!(2, 1, uint, Major.column));
-alias Matrix2x1f = typeof(matrix!(2, 1, float, defaultMajor));
-alias Matrix2x1fr = typeof(matrix!(2, 1, float, Major.row));
-alias Matrix2x1fc = typeof(matrix!(2, 1, float, Major.column));
-alias Cvector2f = typeof(matrix!(2, 1, float, Major.column));
-alias Matrix2x1s = typeof(matrix!(2, 1, short, defaultMajor));
-alias Matrix2x1sr = typeof(matrix!(2, 1, short, Major.row));
-alias Matrix2x1sc = typeof(matrix!(2, 1, short, Major.column));
-alias Cvector2s = typeof(matrix!(2, 1, short, Major.column));
-alias Matrix2x1d = typeof(matrix!(2, 1, double, defaultMajor));
-alias Matrix2x1dr = typeof(matrix!(2, 1, double, Major.row));
-alias Matrix2x1dc = typeof(matrix!(2, 1, double, Major.column));
-alias Cvector2d = typeof(matrix!(2, 1, double, Major.column));
-alias Matrix2x1cf = typeof(matrix!(2, 1, cfloat, defaultMajor));
-alias Matrix2x1cfr = typeof(matrix!(2, 1, cfloat, Major.row));
-alias Matrix2x1cfc = typeof(matrix!(2, 1, cfloat, Major.column));
-alias Cvector2cf = typeof(matrix!(2, 1, cfloat, Major.column));
-alias Matrix2x1ub = typeof(matrix!(2, 1, ubyte, defaultMajor));
-alias Matrix2x1ubr = typeof(matrix!(2, 1, ubyte, Major.row));
-alias Matrix2x1ubc = typeof(matrix!(2, 1, ubyte, Major.column));
-alias Cvector2ub = typeof(matrix!(2, 1, ubyte, Major.column));
-alias Matrix2x1b = typeof(matrix!(2, 1, byte, defaultMajor));
-alias Matrix2x1br = typeof(matrix!(2, 1, byte, Major.row));
-alias Matrix2x1bc = typeof(matrix!(2, 1, byte, Major.column));
-alias Cvector2b = typeof(matrix!(2, 1, byte, Major.column));
-alias Matrix2x1cr = typeof(matrix!(2, 1, creal, defaultMajor));
-alias Matrix2x1crr = typeof(matrix!(2, 1, creal, Major.row));
-alias Matrix2x1crc = typeof(matrix!(2, 1, creal, Major.column));
-alias Cvector2cr = typeof(matrix!(2, 1, creal, Major.column));
-alias Matrix2x1i = typeof(matrix!(2, 1, int, defaultMajor));
-alias Matrix2x1ir = typeof(matrix!(2, 1, int, Major.row));
-alias Matrix2x1ic = typeof(matrix!(2, 1, int, Major.column));
-alias Cvector2i = typeof(matrix!(2, 1, int, Major.column));
-alias Matrix2x1ul = typeof(matrix!(2, 1, ulong, defaultMajor));
-alias Matrix2x1ulr = typeof(matrix!(2, 1, ulong, Major.row));
-alias Matrix2x1ulc = typeof(matrix!(2, 1, ulong, Major.column));
-alias Cvector2ul = typeof(matrix!(2, 1, ulong, Major.column));
-alias Matrix2x1l = typeof(matrix!(2, 1, long, defaultMajor));
-alias Matrix2x1lr = typeof(matrix!(2, 1, long, Major.row));
-alias Matrix2x1lc = typeof(matrix!(2, 1, long, Major.column));
-alias Cvector2l = typeof(matrix!(2, 1, long, Major.column));
-alias Matrix2x1us = typeof(matrix!(2, 1, ushort, defaultMajor));
-alias Matrix2x1usr = typeof(matrix!(2, 1, ushort, Major.row));
-alias Matrix2x1usc = typeof(matrix!(2, 1, ushort, Major.column));
-alias Cvector2us = typeof(matrix!(2, 1, ushort, Major.column));
-alias Matrix2x1r = typeof(matrix!(2, 1, real, defaultMajor));
-alias Matrix2x1rr = typeof(matrix!(2, 1, real, Major.row));
-alias Matrix2x1rc = typeof(matrix!(2, 1, real, Major.column));
-alias Cvector2r = typeof(matrix!(2, 1, real, Major.column));
-alias Matrix2x1cd = typeof(matrix!(2, 1, cdouble, defaultMajor));
-alias Matrix2x1cdr = typeof(matrix!(2, 1, cdouble, Major.row));
-alias Matrix2x1cdc = typeof(matrix!(2, 1, cdouble, Major.column));
-alias Cvector2cd = typeof(matrix!(2, 1, cdouble, Major.column));
-alias Matrix2x2ui = typeof(matrix!(2, 2, uint, defaultMajor));
-alias Matrix2ui = typeof(matrix!(2, 2, uint, defaultMajor));
-alias Matrix2x2uir = typeof(matrix!(2, 2, uint, Major.row));
-alias Matrix2uir = typeof(matrix!(2, 2, uint, Major.row));
-alias Matrix2x2uic = typeof(matrix!(2, 2, uint, Major.column));
-alias Matrix2uic = typeof(matrix!(2, 2, uint, Major.column));
-alias Matrix2x2f = typeof(matrix!(2, 2, float, defaultMajor));
-alias Matrix2f = typeof(matrix!(2, 2, float, defaultMajor));
-alias Matrix2x2fr = typeof(matrix!(2, 2, float, Major.row));
-alias Matrix2fr = typeof(matrix!(2, 2, float, Major.row));
-alias Matrix2x2fc = typeof(matrix!(2, 2, float, Major.column));
-alias Matrix2fc = typeof(matrix!(2, 2, float, Major.column));
-alias Matrix2x2s = typeof(matrix!(2, 2, short, defaultMajor));
-alias Matrix2s = typeof(matrix!(2, 2, short, defaultMajor));
-alias Matrix2x2sr = typeof(matrix!(2, 2, short, Major.row));
-alias Matrix2sr = typeof(matrix!(2, 2, short, Major.row));
-alias Matrix2x2sc = typeof(matrix!(2, 2, short, Major.column));
-alias Matrix2sc = typeof(matrix!(2, 2, short, Major.column));
-alias Matrix2x2d = typeof(matrix!(2, 2, double, defaultMajor));
-alias Matrix2d = typeof(matrix!(2, 2, double, defaultMajor));
-alias Matrix2x2dr = typeof(matrix!(2, 2, double, Major.row));
-alias Matrix2dr = typeof(matrix!(2, 2, double, Major.row));
-alias Matrix2x2dc = typeof(matrix!(2, 2, double, Major.column));
-alias Matrix2dc = typeof(matrix!(2, 2, double, Major.column));
-alias Matrix2x2cf = typeof(matrix!(2, 2, cfloat, defaultMajor));
-alias Matrix2cf = typeof(matrix!(2, 2, cfloat, defaultMajor));
-alias Matrix2x2cfr = typeof(matrix!(2, 2, cfloat, Major.row));
-alias Matrix2cfr = typeof(matrix!(2, 2, cfloat, Major.row));
-alias Matrix2x2cfc = typeof(matrix!(2, 2, cfloat, Major.column));
-alias Matrix2cfc = typeof(matrix!(2, 2, cfloat, Major.column));
-alias Matrix2x2ub = typeof(matrix!(2, 2, ubyte, defaultMajor));
-alias Matrix2ub = typeof(matrix!(2, 2, ubyte, defaultMajor));
-alias Matrix2x2ubr = typeof(matrix!(2, 2, ubyte, Major.row));
-alias Matrix2ubr = typeof(matrix!(2, 2, ubyte, Major.row));
-alias Matrix2x2ubc = typeof(matrix!(2, 2, ubyte, Major.column));
-alias Matrix2ubc = typeof(matrix!(2, 2, ubyte, Major.column));
-alias Matrix2x2b = typeof(matrix!(2, 2, byte, defaultMajor));
-alias Matrix2b = typeof(matrix!(2, 2, byte, defaultMajor));
-alias Matrix2x2br = typeof(matrix!(2, 2, byte, Major.row));
-alias Matrix2br = typeof(matrix!(2, 2, byte, Major.row));
-alias Matrix2x2bc = typeof(matrix!(2, 2, byte, Major.column));
-alias Matrix2bc = typeof(matrix!(2, 2, byte, Major.column));
-alias Matrix2x2cr = typeof(matrix!(2, 2, creal, defaultMajor));
-alias Matrix2cr = typeof(matrix!(2, 2, creal, defaultMajor));
-alias Matrix2x2crr = typeof(matrix!(2, 2, creal, Major.row));
-alias Matrix2crr = typeof(matrix!(2, 2, creal, Major.row));
-alias Matrix2x2crc = typeof(matrix!(2, 2, creal, Major.column));
-alias Matrix2crc = typeof(matrix!(2, 2, creal, Major.column));
-alias Matrix2x2i = typeof(matrix!(2, 2, int, defaultMajor));
-alias Matrix2i = typeof(matrix!(2, 2, int, defaultMajor));
-alias Matrix2x2ir = typeof(matrix!(2, 2, int, Major.row));
-alias Matrix2ir = typeof(matrix!(2, 2, int, Major.row));
-alias Matrix2x2ic = typeof(matrix!(2, 2, int, Major.column));
-alias Matrix2ic = typeof(matrix!(2, 2, int, Major.column));
-alias Matrix2x2ul = typeof(matrix!(2, 2, ulong, defaultMajor));
-alias Matrix2ul = typeof(matrix!(2, 2, ulong, defaultMajor));
-alias Matrix2x2ulr = typeof(matrix!(2, 2, ulong, Major.row));
-alias Matrix2ulr = typeof(matrix!(2, 2, ulong, Major.row));
-alias Matrix2x2ulc = typeof(matrix!(2, 2, ulong, Major.column));
-alias Matrix2ulc = typeof(matrix!(2, 2, ulong, Major.column));
-alias Matrix2x2l = typeof(matrix!(2, 2, long, defaultMajor));
-alias Matrix2l = typeof(matrix!(2, 2, long, defaultMajor));
-alias Matrix2x2lr = typeof(matrix!(2, 2, long, Major.row));
-alias Matrix2lr = typeof(matrix!(2, 2, long, Major.row));
-alias Matrix2x2lc = typeof(matrix!(2, 2, long, Major.column));
-alias Matrix2lc = typeof(matrix!(2, 2, long, Major.column));
-alias Matrix2x2us = typeof(matrix!(2, 2, ushort, defaultMajor));
-alias Matrix2us = typeof(matrix!(2, 2, ushort, defaultMajor));
-alias Matrix2x2usr = typeof(matrix!(2, 2, ushort, Major.row));
-alias Matrix2usr = typeof(matrix!(2, 2, ushort, Major.row));
-alias Matrix2x2usc = typeof(matrix!(2, 2, ushort, Major.column));
-alias Matrix2usc = typeof(matrix!(2, 2, ushort, Major.column));
-alias Matrix2x2r = typeof(matrix!(2, 2, real, defaultMajor));
-alias Matrix2r = typeof(matrix!(2, 2, real, defaultMajor));
-alias Matrix2x2rr = typeof(matrix!(2, 2, real, Major.row));
-alias Matrix2rr = typeof(matrix!(2, 2, real, Major.row));
-alias Matrix2x2rc = typeof(matrix!(2, 2, real, Major.column));
-alias Matrix2rc = typeof(matrix!(2, 2, real, Major.column));
-alias Matrix2x2cd = typeof(matrix!(2, 2, cdouble, defaultMajor));
-alias Matrix2cd = typeof(matrix!(2, 2, cdouble, defaultMajor));
-alias Matrix2x2cdr = typeof(matrix!(2, 2, cdouble, Major.row));
-alias Matrix2cdr = typeof(matrix!(2, 2, cdouble, Major.row));
-alias Matrix2x2cdc = typeof(matrix!(2, 2, cdouble, Major.column));
-alias Matrix2cdc = typeof(matrix!(2, 2, cdouble, Major.column));
-alias Matrix2x3ui = typeof(matrix!(2, 3, uint, defaultMajor));
-alias Matrix2x3uir = typeof(matrix!(2, 3, uint, Major.row));
-alias Matrix2x3uic = typeof(matrix!(2, 3, uint, Major.column));
-alias Matrix2x3f = typeof(matrix!(2, 3, float, defaultMajor));
-alias Matrix2x3fr = typeof(matrix!(2, 3, float, Major.row));
-alias Matrix2x3fc = typeof(matrix!(2, 3, float, Major.column));
-alias Matrix2x3s = typeof(matrix!(2, 3, short, defaultMajor));
-alias Matrix2x3sr = typeof(matrix!(2, 3, short, Major.row));
-alias Matrix2x3sc = typeof(matrix!(2, 3, short, Major.column));
-alias Matrix2x3d = typeof(matrix!(2, 3, double, defaultMajor));
-alias Matrix2x3dr = typeof(matrix!(2, 3, double, Major.row));
-alias Matrix2x3dc = typeof(matrix!(2, 3, double, Major.column));
-alias Matrix2x3cf = typeof(matrix!(2, 3, cfloat, defaultMajor));
-alias Matrix2x3cfr = typeof(matrix!(2, 3, cfloat, Major.row));
-alias Matrix2x3cfc = typeof(matrix!(2, 3, cfloat, Major.column));
-alias Matrix2x3ub = typeof(matrix!(2, 3, ubyte, defaultMajor));
-alias Matrix2x3ubr = typeof(matrix!(2, 3, ubyte, Major.row));
-alias Matrix2x3ubc = typeof(matrix!(2, 3, ubyte, Major.column));
-alias Matrix2x3b = typeof(matrix!(2, 3, byte, defaultMajor));
-alias Matrix2x3br = typeof(matrix!(2, 3, byte, Major.row));
-alias Matrix2x3bc = typeof(matrix!(2, 3, byte, Major.column));
-alias Matrix2x3cr = typeof(matrix!(2, 3, creal, defaultMajor));
-alias Matrix2x3crr = typeof(matrix!(2, 3, creal, Major.row));
-alias Matrix2x3crc = typeof(matrix!(2, 3, creal, Major.column));
-alias Matrix2x3i = typeof(matrix!(2, 3, int, defaultMajor));
-alias Matrix2x3ir = typeof(matrix!(2, 3, int, Major.row));
-alias Matrix2x3ic = typeof(matrix!(2, 3, int, Major.column));
-alias Matrix2x3ul = typeof(matrix!(2, 3, ulong, defaultMajor));
-alias Matrix2x3ulr = typeof(matrix!(2, 3, ulong, Major.row));
-alias Matrix2x3ulc = typeof(matrix!(2, 3, ulong, Major.column));
-alias Matrix2x3l = typeof(matrix!(2, 3, long, defaultMajor));
-alias Matrix2x3lr = typeof(matrix!(2, 3, long, Major.row));
-alias Matrix2x3lc = typeof(matrix!(2, 3, long, Major.column));
-alias Matrix2x3us = typeof(matrix!(2, 3, ushort, defaultMajor));
-alias Matrix2x3usr = typeof(matrix!(2, 3, ushort, Major.row));
-alias Matrix2x3usc = typeof(matrix!(2, 3, ushort, Major.column));
-alias Matrix2x3r = typeof(matrix!(2, 3, real, defaultMajor));
-alias Matrix2x3rr = typeof(matrix!(2, 3, real, Major.row));
-alias Matrix2x3rc = typeof(matrix!(2, 3, real, Major.column));
-alias Matrix2x3cd = typeof(matrix!(2, 3, cdouble, defaultMajor));
-alias Matrix2x3cdr = typeof(matrix!(2, 3, cdouble, Major.row));
-alias Matrix2x3cdc = typeof(matrix!(2, 3, cdouble, Major.column));
-alias Matrix2x4ui = typeof(matrix!(2, 4, uint, defaultMajor));
-alias Matrix2x4uir = typeof(matrix!(2, 4, uint, Major.row));
-alias Matrix2x4uic = typeof(matrix!(2, 4, uint, Major.column));
-alias Matrix2x4f = typeof(matrix!(2, 4, float, defaultMajor));
-alias Matrix2x4fr = typeof(matrix!(2, 4, float, Major.row));
-alias Matrix2x4fc = typeof(matrix!(2, 4, float, Major.column));
-alias Matrix2x4s = typeof(matrix!(2, 4, short, defaultMajor));
-alias Matrix2x4sr = typeof(matrix!(2, 4, short, Major.row));
-alias Matrix2x4sc = typeof(matrix!(2, 4, short, Major.column));
-alias Matrix2x4d = typeof(matrix!(2, 4, double, defaultMajor));
-alias Matrix2x4dr = typeof(matrix!(2, 4, double, Major.row));
-alias Matrix2x4dc = typeof(matrix!(2, 4, double, Major.column));
-alias Matrix2x4cf = typeof(matrix!(2, 4, cfloat, defaultMajor));
-alias Matrix2x4cfr = typeof(matrix!(2, 4, cfloat, Major.row));
-alias Matrix2x4cfc = typeof(matrix!(2, 4, cfloat, Major.column));
-alias Matrix2x4ub = typeof(matrix!(2, 4, ubyte, defaultMajor));
-alias Matrix2x4ubr = typeof(matrix!(2, 4, ubyte, Major.row));
-alias Matrix2x4ubc = typeof(matrix!(2, 4, ubyte, Major.column));
-alias Matrix2x4b = typeof(matrix!(2, 4, byte, defaultMajor));
-alias Matrix2x4br = typeof(matrix!(2, 4, byte, Major.row));
-alias Matrix2x4bc = typeof(matrix!(2, 4, byte, Major.column));
-alias Matrix2x4cr = typeof(matrix!(2, 4, creal, defaultMajor));
-alias Matrix2x4crr = typeof(matrix!(2, 4, creal, Major.row));
-alias Matrix2x4crc = typeof(matrix!(2, 4, creal, Major.column));
-alias Matrix2x4i = typeof(matrix!(2, 4, int, defaultMajor));
-alias Matrix2x4ir = typeof(matrix!(2, 4, int, Major.row));
-alias Matrix2x4ic = typeof(matrix!(2, 4, int, Major.column));
-alias Matrix2x4ul = typeof(matrix!(2, 4, ulong, defaultMajor));
-alias Matrix2x4ulr = typeof(matrix!(2, 4, ulong, Major.row));
-alias Matrix2x4ulc = typeof(matrix!(2, 4, ulong, Major.column));
-alias Matrix2x4l = typeof(matrix!(2, 4, long, defaultMajor));
-alias Matrix2x4lr = typeof(matrix!(2, 4, long, Major.row));
-alias Matrix2x4lc = typeof(matrix!(2, 4, long, Major.column));
-alias Matrix2x4us = typeof(matrix!(2, 4, ushort, defaultMajor));
-alias Matrix2x4usr = typeof(matrix!(2, 4, ushort, Major.row));
-alias Matrix2x4usc = typeof(matrix!(2, 4, ushort, Major.column));
-alias Matrix2x4r = typeof(matrix!(2, 4, real, defaultMajor));
-alias Matrix2x4rr = typeof(matrix!(2, 4, real, Major.row));
-alias Matrix2x4rc = typeof(matrix!(2, 4, real, Major.column));
-alias Matrix2x4cd = typeof(matrix!(2, 4, cdouble, defaultMajor));
-alias Matrix2x4cdr = typeof(matrix!(2, 4, cdouble, Major.row));
-alias Matrix2x4cdc = typeof(matrix!(2, 4, cdouble, Major.column));
-alias Matrix3x1ui = typeof(matrix!(3, 1, uint, defaultMajor));
-alias Matrix3x1uir = typeof(matrix!(3, 1, uint, Major.row));
-alias Matrix3x1uic = typeof(matrix!(3, 1, uint, Major.column));
-alias Cvector3ui = typeof(matrix!(3, 1, uint, Major.column));
-alias Matrix3x1f = typeof(matrix!(3, 1, float, defaultMajor));
-alias Matrix3x1fr = typeof(matrix!(3, 1, float, Major.row));
-alias Matrix3x1fc = typeof(matrix!(3, 1, float, Major.column));
-alias Cvector3f = typeof(matrix!(3, 1, float, Major.column));
-alias Matrix3x1s = typeof(matrix!(3, 1, short, defaultMajor));
-alias Matrix3x1sr = typeof(matrix!(3, 1, short, Major.row));
-alias Matrix3x1sc = typeof(matrix!(3, 1, short, Major.column));
-alias Cvector3s = typeof(matrix!(3, 1, short, Major.column));
-alias Matrix3x1d = typeof(matrix!(3, 1, double, defaultMajor));
-alias Matrix3x1dr = typeof(matrix!(3, 1, double, Major.row));
-alias Matrix3x1dc = typeof(matrix!(3, 1, double, Major.column));
-alias Cvector3d = typeof(matrix!(3, 1, double, Major.column));
-alias Matrix3x1cf = typeof(matrix!(3, 1, cfloat, defaultMajor));
-alias Matrix3x1cfr = typeof(matrix!(3, 1, cfloat, Major.row));
-alias Matrix3x1cfc = typeof(matrix!(3, 1, cfloat, Major.column));
-alias Cvector3cf = typeof(matrix!(3, 1, cfloat, Major.column));
-alias Matrix3x1ub = typeof(matrix!(3, 1, ubyte, defaultMajor));
-alias Matrix3x1ubr = typeof(matrix!(3, 1, ubyte, Major.row));
-alias Matrix3x1ubc = typeof(matrix!(3, 1, ubyte, Major.column));
-alias Cvector3ub = typeof(matrix!(3, 1, ubyte, Major.column));
-alias Matrix3x1b = typeof(matrix!(3, 1, byte, defaultMajor));
-alias Matrix3x1br = typeof(matrix!(3, 1, byte, Major.row));
-alias Matrix3x1bc = typeof(matrix!(3, 1, byte, Major.column));
-alias Cvector3b = typeof(matrix!(3, 1, byte, Major.column));
-alias Matrix3x1cr = typeof(matrix!(3, 1, creal, defaultMajor));
-alias Matrix3x1crr = typeof(matrix!(3, 1, creal, Major.row));
-alias Matrix3x1crc = typeof(matrix!(3, 1, creal, Major.column));
-alias Cvector3cr = typeof(matrix!(3, 1, creal, Major.column));
-alias Matrix3x1i = typeof(matrix!(3, 1, int, defaultMajor));
-alias Matrix3x1ir = typeof(matrix!(3, 1, int, Major.row));
-alias Matrix3x1ic = typeof(matrix!(3, 1, int, Major.column));
-alias Cvector3i = typeof(matrix!(3, 1, int, Major.column));
-alias Matrix3x1ul = typeof(matrix!(3, 1, ulong, defaultMajor));
-alias Matrix3x1ulr = typeof(matrix!(3, 1, ulong, Major.row));
-alias Matrix3x1ulc = typeof(matrix!(3, 1, ulong, Major.column));
-alias Cvector3ul = typeof(matrix!(3, 1, ulong, Major.column));
-alias Matrix3x1l = typeof(matrix!(3, 1, long, defaultMajor));
-alias Matrix3x1lr = typeof(matrix!(3, 1, long, Major.row));
-alias Matrix3x1lc = typeof(matrix!(3, 1, long, Major.column));
-alias Cvector3l = typeof(matrix!(3, 1, long, Major.column));
-alias Matrix3x1us = typeof(matrix!(3, 1, ushort, defaultMajor));
-alias Matrix3x1usr = typeof(matrix!(3, 1, ushort, Major.row));
-alias Matrix3x1usc = typeof(matrix!(3, 1, ushort, Major.column));
-alias Cvector3us = typeof(matrix!(3, 1, ushort, Major.column));
-alias Matrix3x1r = typeof(matrix!(3, 1, real, defaultMajor));
-alias Matrix3x1rr = typeof(matrix!(3, 1, real, Major.row));
-alias Matrix3x1rc = typeof(matrix!(3, 1, real, Major.column));
-alias Cvector3r = typeof(matrix!(3, 1, real, Major.column));
-alias Matrix3x1cd = typeof(matrix!(3, 1, cdouble, defaultMajor));
-alias Matrix3x1cdr = typeof(matrix!(3, 1, cdouble, Major.row));
-alias Matrix3x1cdc = typeof(matrix!(3, 1, cdouble, Major.column));
-alias Cvector3cd = typeof(matrix!(3, 1, cdouble, Major.column));
-alias Matrix3x2ui = typeof(matrix!(3, 2, uint, defaultMajor));
-alias Matrix3x2uir = typeof(matrix!(3, 2, uint, Major.row));
-alias Matrix3x2uic = typeof(matrix!(3, 2, uint, Major.column));
-alias Matrix3x2f = typeof(matrix!(3, 2, float, defaultMajor));
-alias Matrix3x2fr = typeof(matrix!(3, 2, float, Major.row));
-alias Matrix3x2fc = typeof(matrix!(3, 2, float, Major.column));
-alias Matrix3x2s = typeof(matrix!(3, 2, short, defaultMajor));
-alias Matrix3x2sr = typeof(matrix!(3, 2, short, Major.row));
-alias Matrix3x2sc = typeof(matrix!(3, 2, short, Major.column));
-alias Matrix3x2d = typeof(matrix!(3, 2, double, defaultMajor));
-alias Matrix3x2dr = typeof(matrix!(3, 2, double, Major.row));
-alias Matrix3x2dc = typeof(matrix!(3, 2, double, Major.column));
-alias Matrix3x2cf = typeof(matrix!(3, 2, cfloat, defaultMajor));
-alias Matrix3x2cfr = typeof(matrix!(3, 2, cfloat, Major.row));
-alias Matrix3x2cfc = typeof(matrix!(3, 2, cfloat, Major.column));
-alias Matrix3x2ub = typeof(matrix!(3, 2, ubyte, defaultMajor));
-alias Matrix3x2ubr = typeof(matrix!(3, 2, ubyte, Major.row));
-alias Matrix3x2ubc = typeof(matrix!(3, 2, ubyte, Major.column));
-alias Matrix3x2b = typeof(matrix!(3, 2, byte, defaultMajor));
-alias Matrix3x2br = typeof(matrix!(3, 2, byte, Major.row));
-alias Matrix3x2bc = typeof(matrix!(3, 2, byte, Major.column));
-alias Matrix3x2cr = typeof(matrix!(3, 2, creal, defaultMajor));
-alias Matrix3x2crr = typeof(matrix!(3, 2, creal, Major.row));
-alias Matrix3x2crc = typeof(matrix!(3, 2, creal, Major.column));
-alias Matrix3x2i = typeof(matrix!(3, 2, int, defaultMajor));
-alias Matrix3x2ir = typeof(matrix!(3, 2, int, Major.row));
-alias Matrix3x2ic = typeof(matrix!(3, 2, int, Major.column));
-alias Matrix3x2ul = typeof(matrix!(3, 2, ulong, defaultMajor));
-alias Matrix3x2ulr = typeof(matrix!(3, 2, ulong, Major.row));
-alias Matrix3x2ulc = typeof(matrix!(3, 2, ulong, Major.column));
-alias Matrix3x2l = typeof(matrix!(3, 2, long, defaultMajor));
-alias Matrix3x2lr = typeof(matrix!(3, 2, long, Major.row));
-alias Matrix3x2lc = typeof(matrix!(3, 2, long, Major.column));
-alias Matrix3x2us = typeof(matrix!(3, 2, ushort, defaultMajor));
-alias Matrix3x2usr = typeof(matrix!(3, 2, ushort, Major.row));
-alias Matrix3x2usc = typeof(matrix!(3, 2, ushort, Major.column));
-alias Matrix3x2r = typeof(matrix!(3, 2, real, defaultMajor));
-alias Matrix3x2rr = typeof(matrix!(3, 2, real, Major.row));
-alias Matrix3x2rc = typeof(matrix!(3, 2, real, Major.column));
-alias Matrix3x2cd = typeof(matrix!(3, 2, cdouble, defaultMajor));
-alias Matrix3x2cdr = typeof(matrix!(3, 2, cdouble, Major.row));
-alias Matrix3x2cdc = typeof(matrix!(3, 2, cdouble, Major.column));
-alias Matrix3x3ui = typeof(matrix!(3, 3, uint, defaultMajor));
-alias Matrix3ui = typeof(matrix!(3, 3, uint, defaultMajor));
-alias Matrix3x3uir = typeof(matrix!(3, 3, uint, Major.row));
-alias Matrix3uir = typeof(matrix!(3, 3, uint, Major.row));
-alias Matrix3x3uic = typeof(matrix!(3, 3, uint, Major.column));
-alias Matrix3uic = typeof(matrix!(3, 3, uint, Major.column));
-alias Matrix3x3f = typeof(matrix!(3, 3, float, defaultMajor));
-alias Matrix3f = typeof(matrix!(3, 3, float, defaultMajor));
-alias Matrix3x3fr = typeof(matrix!(3, 3, float, Major.row));
-alias Matrix3fr = typeof(matrix!(3, 3, float, Major.row));
-alias Matrix3x3fc = typeof(matrix!(3, 3, float, Major.column));
-alias Matrix3fc = typeof(matrix!(3, 3, float, Major.column));
-alias Matrix3x3s = typeof(matrix!(3, 3, short, defaultMajor));
-alias Matrix3s = typeof(matrix!(3, 3, short, defaultMajor));
-alias Matrix3x3sr = typeof(matrix!(3, 3, short, Major.row));
-alias Matrix3sr = typeof(matrix!(3, 3, short, Major.row));
-alias Matrix3x3sc = typeof(matrix!(3, 3, short, Major.column));
-alias Matrix3sc = typeof(matrix!(3, 3, short, Major.column));
-alias Matrix3x3d = typeof(matrix!(3, 3, double, defaultMajor));
-alias Matrix3d = typeof(matrix!(3, 3, double, defaultMajor));
-alias Matrix3x3dr = typeof(matrix!(3, 3, double, Major.row));
-alias Matrix3dr = typeof(matrix!(3, 3, double, Major.row));
-alias Matrix3x3dc = typeof(matrix!(3, 3, double, Major.column));
-alias Matrix3dc = typeof(matrix!(3, 3, double, Major.column));
-alias Matrix3x3cf = typeof(matrix!(3, 3, cfloat, defaultMajor));
-alias Matrix3cf = typeof(matrix!(3, 3, cfloat, defaultMajor));
-alias Matrix3x3cfr = typeof(matrix!(3, 3, cfloat, Major.row));
-alias Matrix3cfr = typeof(matrix!(3, 3, cfloat, Major.row));
-alias Matrix3x3cfc = typeof(matrix!(3, 3, cfloat, Major.column));
-alias Matrix3cfc = typeof(matrix!(3, 3, cfloat, Major.column));
-alias Matrix3x3ub = typeof(matrix!(3, 3, ubyte, defaultMajor));
-alias Matrix3ub = typeof(matrix!(3, 3, ubyte, defaultMajor));
-alias Matrix3x3ubr = typeof(matrix!(3, 3, ubyte, Major.row));
-alias Matrix3ubr = typeof(matrix!(3, 3, ubyte, Major.row));
-alias Matrix3x3ubc = typeof(matrix!(3, 3, ubyte, Major.column));
-alias Matrix3ubc = typeof(matrix!(3, 3, ubyte, Major.column));
-alias Matrix3x3b = typeof(matrix!(3, 3, byte, defaultMajor));
-alias Matrix3b = typeof(matrix!(3, 3, byte, defaultMajor));
-alias Matrix3x3br = typeof(matrix!(3, 3, byte, Major.row));
-alias Matrix3br = typeof(matrix!(3, 3, byte, Major.row));
-alias Matrix3x3bc = typeof(matrix!(3, 3, byte, Major.column));
-alias Matrix3bc = typeof(matrix!(3, 3, byte, Major.column));
-alias Matrix3x3cr = typeof(matrix!(3, 3, creal, defaultMajor));
-alias Matrix3cr = typeof(matrix!(3, 3, creal, defaultMajor));
-alias Matrix3x3crr = typeof(matrix!(3, 3, creal, Major.row));
-alias Matrix3crr = typeof(matrix!(3, 3, creal, Major.row));
-alias Matrix3x3crc = typeof(matrix!(3, 3, creal, Major.column));
-alias Matrix3crc = typeof(matrix!(3, 3, creal, Major.column));
-alias Matrix3x3i = typeof(matrix!(3, 3, int, defaultMajor));
-alias Matrix3i = typeof(matrix!(3, 3, int, defaultMajor));
-alias Matrix3x3ir = typeof(matrix!(3, 3, int, Major.row));
-alias Matrix3ir = typeof(matrix!(3, 3, int, Major.row));
-alias Matrix3x3ic = typeof(matrix!(3, 3, int, Major.column));
-alias Matrix3ic = typeof(matrix!(3, 3, int, Major.column));
-alias Matrix3x3ul = typeof(matrix!(3, 3, ulong, defaultMajor));
-alias Matrix3ul = typeof(matrix!(3, 3, ulong, defaultMajor));
-alias Matrix3x3ulr = typeof(matrix!(3, 3, ulong, Major.row));
-alias Matrix3ulr = typeof(matrix!(3, 3, ulong, Major.row));
-alias Matrix3x3ulc = typeof(matrix!(3, 3, ulong, Major.column));
-alias Matrix3ulc = typeof(matrix!(3, 3, ulong, Major.column));
-alias Matrix3x3l = typeof(matrix!(3, 3, long, defaultMajor));
-alias Matrix3l = typeof(matrix!(3, 3, long, defaultMajor));
-alias Matrix3x3lr = typeof(matrix!(3, 3, long, Major.row));
-alias Matrix3lr = typeof(matrix!(3, 3, long, Major.row));
-alias Matrix3x3lc = typeof(matrix!(3, 3, long, Major.column));
-alias Matrix3lc = typeof(matrix!(3, 3, long, Major.column));
-alias Matrix3x3us = typeof(matrix!(3, 3, ushort, defaultMajor));
-alias Matrix3us = typeof(matrix!(3, 3, ushort, defaultMajor));
-alias Matrix3x3usr = typeof(matrix!(3, 3, ushort, Major.row));
-alias Matrix3usr = typeof(matrix!(3, 3, ushort, Major.row));
-alias Matrix3x3usc = typeof(matrix!(3, 3, ushort, Major.column));
-alias Matrix3usc = typeof(matrix!(3, 3, ushort, Major.column));
-alias Matrix3x3r = typeof(matrix!(3, 3, real, defaultMajor));
-alias Matrix3r = typeof(matrix!(3, 3, real, defaultMajor));
-alias Matrix3x3rr = typeof(matrix!(3, 3, real, Major.row));
-alias Matrix3rr = typeof(matrix!(3, 3, real, Major.row));
-alias Matrix3x3rc = typeof(matrix!(3, 3, real, Major.column));
-alias Matrix3rc = typeof(matrix!(3, 3, real, Major.column));
-alias Matrix3x3cd = typeof(matrix!(3, 3, cdouble, defaultMajor));
-alias Matrix3cd = typeof(matrix!(3, 3, cdouble, defaultMajor));
-alias Matrix3x3cdr = typeof(matrix!(3, 3, cdouble, Major.row));
-alias Matrix3cdr = typeof(matrix!(3, 3, cdouble, Major.row));
-alias Matrix3x3cdc = typeof(matrix!(3, 3, cdouble, Major.column));
-alias Matrix3cdc = typeof(matrix!(3, 3, cdouble, Major.column));
-alias Matrix3x4ui = typeof(matrix!(3, 4, uint, defaultMajor));
-alias Matrix3x4uir = typeof(matrix!(3, 4, uint, Major.row));
-alias Matrix3x4uic = typeof(matrix!(3, 4, uint, Major.column));
-alias Matrix3x4f = typeof(matrix!(3, 4, float, defaultMajor));
-alias Matrix3x4fr = typeof(matrix!(3, 4, float, Major.row));
-alias Matrix3x4fc = typeof(matrix!(3, 4, float, Major.column));
-alias Matrix3x4s = typeof(matrix!(3, 4, short, defaultMajor));
-alias Matrix3x4sr = typeof(matrix!(3, 4, short, Major.row));
-alias Matrix3x4sc = typeof(matrix!(3, 4, short, Major.column));
-alias Matrix3x4d = typeof(matrix!(3, 4, double, defaultMajor));
-alias Matrix3x4dr = typeof(matrix!(3, 4, double, Major.row));
-alias Matrix3x4dc = typeof(matrix!(3, 4, double, Major.column));
-alias Matrix3x4cf = typeof(matrix!(3, 4, cfloat, defaultMajor));
-alias Matrix3x4cfr = typeof(matrix!(3, 4, cfloat, Major.row));
-alias Matrix3x4cfc = typeof(matrix!(3, 4, cfloat, Major.column));
-alias Matrix3x4ub = typeof(matrix!(3, 4, ubyte, defaultMajor));
-alias Matrix3x4ubr = typeof(matrix!(3, 4, ubyte, Major.row));
-alias Matrix3x4ubc = typeof(matrix!(3, 4, ubyte, Major.column));
-alias Matrix3x4b = typeof(matrix!(3, 4, byte, defaultMajor));
-alias Matrix3x4br = typeof(matrix!(3, 4, byte, Major.row));
-alias Matrix3x4bc = typeof(matrix!(3, 4, byte, Major.column));
-alias Matrix3x4cr = typeof(matrix!(3, 4, creal, defaultMajor));
-alias Matrix3x4crr = typeof(matrix!(3, 4, creal, Major.row));
-alias Matrix3x4crc = typeof(matrix!(3, 4, creal, Major.column));
-alias Matrix3x4i = typeof(matrix!(3, 4, int, defaultMajor));
-alias Matrix3x4ir = typeof(matrix!(3, 4, int, Major.row));
-alias Matrix3x4ic = typeof(matrix!(3, 4, int, Major.column));
-alias Matrix3x4ul = typeof(matrix!(3, 4, ulong, defaultMajor));
-alias Matrix3x4ulr = typeof(matrix!(3, 4, ulong, Major.row));
-alias Matrix3x4ulc = typeof(matrix!(3, 4, ulong, Major.column));
-alias Matrix3x4l = typeof(matrix!(3, 4, long, defaultMajor));
-alias Matrix3x4lr = typeof(matrix!(3, 4, long, Major.row));
-alias Matrix3x4lc = typeof(matrix!(3, 4, long, Major.column));
-alias Matrix3x4us = typeof(matrix!(3, 4, ushort, defaultMajor));
-alias Matrix3x4usr = typeof(matrix!(3, 4, ushort, Major.row));
-alias Matrix3x4usc = typeof(matrix!(3, 4, ushort, Major.column));
-alias Matrix3x4r = typeof(matrix!(3, 4, real, defaultMajor));
-alias Matrix3x4rr = typeof(matrix!(3, 4, real, Major.row));
-alias Matrix3x4rc = typeof(matrix!(3, 4, real, Major.column));
-alias Matrix3x4cd = typeof(matrix!(3, 4, cdouble, defaultMajor));
-alias Matrix3x4cdr = typeof(matrix!(3, 4, cdouble, Major.row));
-alias Matrix3x4cdc = typeof(matrix!(3, 4, cdouble, Major.column));
-alias Matrix4x1ui = typeof(matrix!(4, 1, uint, defaultMajor));
-alias Matrix4x1uir = typeof(matrix!(4, 1, uint, Major.row));
-alias Matrix4x1uic = typeof(matrix!(4, 1, uint, Major.column));
-alias Cvector4ui = typeof(matrix!(4, 1, uint, Major.column));
-alias Matrix4x1f = typeof(matrix!(4, 1, float, defaultMajor));
-alias Matrix4x1fr = typeof(matrix!(4, 1, float, Major.row));
-alias Matrix4x1fc = typeof(matrix!(4, 1, float, Major.column));
-alias Cvector4f = typeof(matrix!(4, 1, float, Major.column));
-alias Matrix4x1s = typeof(matrix!(4, 1, short, defaultMajor));
-alias Matrix4x1sr = typeof(matrix!(4, 1, short, Major.row));
-alias Matrix4x1sc = typeof(matrix!(4, 1, short, Major.column));
-alias Cvector4s = typeof(matrix!(4, 1, short, Major.column));
-alias Matrix4x1d = typeof(matrix!(4, 1, double, defaultMajor));
-alias Matrix4x1dr = typeof(matrix!(4, 1, double, Major.row));
-alias Matrix4x1dc = typeof(matrix!(4, 1, double, Major.column));
-alias Cvector4d = typeof(matrix!(4, 1, double, Major.column));
-alias Matrix4x1cf = typeof(matrix!(4, 1, cfloat, defaultMajor));
-alias Matrix4x1cfr = typeof(matrix!(4, 1, cfloat, Major.row));
-alias Matrix4x1cfc = typeof(matrix!(4, 1, cfloat, Major.column));
-alias Cvector4cf = typeof(matrix!(4, 1, cfloat, Major.column));
-alias Matrix4x1ub = typeof(matrix!(4, 1, ubyte, defaultMajor));
-alias Matrix4x1ubr = typeof(matrix!(4, 1, ubyte, Major.row));
-alias Matrix4x1ubc = typeof(matrix!(4, 1, ubyte, Major.column));
-alias Cvector4ub = typeof(matrix!(4, 1, ubyte, Major.column));
-alias Matrix4x1b = typeof(matrix!(4, 1, byte, defaultMajor));
-alias Matrix4x1br = typeof(matrix!(4, 1, byte, Major.row));
-alias Matrix4x1bc = typeof(matrix!(4, 1, byte, Major.column));
-alias Cvector4b = typeof(matrix!(4, 1, byte, Major.column));
-alias Matrix4x1cr = typeof(matrix!(4, 1, creal, defaultMajor));
-alias Matrix4x1crr = typeof(matrix!(4, 1, creal, Major.row));
-alias Matrix4x1crc = typeof(matrix!(4, 1, creal, Major.column));
-alias Cvector4cr = typeof(matrix!(4, 1, creal, Major.column));
-alias Matrix4x1i = typeof(matrix!(4, 1, int, defaultMajor));
-alias Matrix4x1ir = typeof(matrix!(4, 1, int, Major.row));
-alias Matrix4x1ic = typeof(matrix!(4, 1, int, Major.column));
-alias Cvector4i = typeof(matrix!(4, 1, int, Major.column));
-alias Matrix4x1ul = typeof(matrix!(4, 1, ulong, defaultMajor));
-alias Matrix4x1ulr = typeof(matrix!(4, 1, ulong, Major.row));
-alias Matrix4x1ulc = typeof(matrix!(4, 1, ulong, Major.column));
-alias Cvector4ul = typeof(matrix!(4, 1, ulong, Major.column));
-alias Matrix4x1l = typeof(matrix!(4, 1, long, defaultMajor));
-alias Matrix4x1lr = typeof(matrix!(4, 1, long, Major.row));
-alias Matrix4x1lc = typeof(matrix!(4, 1, long, Major.column));
-alias Cvector4l = typeof(matrix!(4, 1, long, Major.column));
-alias Matrix4x1us = typeof(matrix!(4, 1, ushort, defaultMajor));
-alias Matrix4x1usr = typeof(matrix!(4, 1, ushort, Major.row));
-alias Matrix4x1usc = typeof(matrix!(4, 1, ushort, Major.column));
-alias Cvector4us = typeof(matrix!(4, 1, ushort, Major.column));
-alias Matrix4x1r = typeof(matrix!(4, 1, real, defaultMajor));
-alias Matrix4x1rr = typeof(matrix!(4, 1, real, Major.row));
-alias Matrix4x1rc = typeof(matrix!(4, 1, real, Major.column));
-alias Cvector4r = typeof(matrix!(4, 1, real, Major.column));
-alias Matrix4x1cd = typeof(matrix!(4, 1, cdouble, defaultMajor));
-alias Matrix4x1cdr = typeof(matrix!(4, 1, cdouble, Major.row));
-alias Matrix4x1cdc = typeof(matrix!(4, 1, cdouble, Major.column));
-alias Cvector4cd = typeof(matrix!(4, 1, cdouble, Major.column));
-alias Matrix4x2ui = typeof(matrix!(4, 2, uint, defaultMajor));
-alias Matrix4x2uir = typeof(matrix!(4, 2, uint, Major.row));
-alias Matrix4x2uic = typeof(matrix!(4, 2, uint, Major.column));
-alias Matrix4x2f = typeof(matrix!(4, 2, float, defaultMajor));
-alias Matrix4x2fr = typeof(matrix!(4, 2, float, Major.row));
-alias Matrix4x2fc = typeof(matrix!(4, 2, float, Major.column));
-alias Matrix4x2s = typeof(matrix!(4, 2, short, defaultMajor));
-alias Matrix4x2sr = typeof(matrix!(4, 2, short, Major.row));
-alias Matrix4x2sc = typeof(matrix!(4, 2, short, Major.column));
-alias Matrix4x2d = typeof(matrix!(4, 2, double, defaultMajor));
-alias Matrix4x2dr = typeof(matrix!(4, 2, double, Major.row));
-alias Matrix4x2dc = typeof(matrix!(4, 2, double, Major.column));
-alias Matrix4x2cf = typeof(matrix!(4, 2, cfloat, defaultMajor));
-alias Matrix4x2cfr = typeof(matrix!(4, 2, cfloat, Major.row));
-alias Matrix4x2cfc = typeof(matrix!(4, 2, cfloat, Major.column));
-alias Matrix4x2ub = typeof(matrix!(4, 2, ubyte, defaultMajor));
-alias Matrix4x2ubr = typeof(matrix!(4, 2, ubyte, Major.row));
-alias Matrix4x2ubc = typeof(matrix!(4, 2, ubyte, Major.column));
-alias Matrix4x2b = typeof(matrix!(4, 2, byte, defaultMajor));
-alias Matrix4x2br = typeof(matrix!(4, 2, byte, Major.row));
-alias Matrix4x2bc = typeof(matrix!(4, 2, byte, Major.column));
-alias Matrix4x2cr = typeof(matrix!(4, 2, creal, defaultMajor));
-alias Matrix4x2crr = typeof(matrix!(4, 2, creal, Major.row));
-alias Matrix4x2crc = typeof(matrix!(4, 2, creal, Major.column));
-alias Matrix4x2i = typeof(matrix!(4, 2, int, defaultMajor));
-alias Matrix4x2ir = typeof(matrix!(4, 2, int, Major.row));
-alias Matrix4x2ic = typeof(matrix!(4, 2, int, Major.column));
-alias Matrix4x2ul = typeof(matrix!(4, 2, ulong, defaultMajor));
-alias Matrix4x2ulr = typeof(matrix!(4, 2, ulong, Major.row));
-alias Matrix4x2ulc = typeof(matrix!(4, 2, ulong, Major.column));
-alias Matrix4x2l = typeof(matrix!(4, 2, long, defaultMajor));
-alias Matrix4x2lr = typeof(matrix!(4, 2, long, Major.row));
-alias Matrix4x2lc = typeof(matrix!(4, 2, long, Major.column));
-alias Matrix4x2us = typeof(matrix!(4, 2, ushort, defaultMajor));
-alias Matrix4x2usr = typeof(matrix!(4, 2, ushort, Major.row));
-alias Matrix4x2usc = typeof(matrix!(4, 2, ushort, Major.column));
-alias Matrix4x2r = typeof(matrix!(4, 2, real, defaultMajor));
-alias Matrix4x2rr = typeof(matrix!(4, 2, real, Major.row));
-alias Matrix4x2rc = typeof(matrix!(4, 2, real, Major.column));
-alias Matrix4x2cd = typeof(matrix!(4, 2, cdouble, defaultMajor));
-alias Matrix4x2cdr = typeof(matrix!(4, 2, cdouble, Major.row));
-alias Matrix4x2cdc = typeof(matrix!(4, 2, cdouble, Major.column));
-alias Matrix4x3ui = typeof(matrix!(4, 3, uint, defaultMajor));
-alias Matrix4x3uir = typeof(matrix!(4, 3, uint, Major.row));
-alias Matrix4x3uic = typeof(matrix!(4, 3, uint, Major.column));
-alias Matrix4x3f = typeof(matrix!(4, 3, float, defaultMajor));
-alias Matrix4x3fr = typeof(matrix!(4, 3, float, Major.row));
-alias Matrix4x3fc = typeof(matrix!(4, 3, float, Major.column));
-alias Matrix4x3s = typeof(matrix!(4, 3, short, defaultMajor));
-alias Matrix4x3sr = typeof(matrix!(4, 3, short, Major.row));
-alias Matrix4x3sc = typeof(matrix!(4, 3, short, Major.column));
-alias Matrix4x3d = typeof(matrix!(4, 3, double, defaultMajor));
-alias Matrix4x3dr = typeof(matrix!(4, 3, double, Major.row));
-alias Matrix4x3dc = typeof(matrix!(4, 3, double, Major.column));
-alias Matrix4x3cf = typeof(matrix!(4, 3, cfloat, defaultMajor));
-alias Matrix4x3cfr = typeof(matrix!(4, 3, cfloat, Major.row));
-alias Matrix4x3cfc = typeof(matrix!(4, 3, cfloat, Major.column));
-alias Matrix4x3ub = typeof(matrix!(4, 3, ubyte, defaultMajor));
-alias Matrix4x3ubr = typeof(matrix!(4, 3, ubyte, Major.row));
-alias Matrix4x3ubc = typeof(matrix!(4, 3, ubyte, Major.column));
-alias Matrix4x3b = typeof(matrix!(4, 3, byte, defaultMajor));
-alias Matrix4x3br = typeof(matrix!(4, 3, byte, Major.row));
-alias Matrix4x3bc = typeof(matrix!(4, 3, byte, Major.column));
-alias Matrix4x3cr = typeof(matrix!(4, 3, creal, defaultMajor));
-alias Matrix4x3crr = typeof(matrix!(4, 3, creal, Major.row));
-alias Matrix4x3crc = typeof(matrix!(4, 3, creal, Major.column));
-alias Matrix4x3i = typeof(matrix!(4, 3, int, defaultMajor));
-alias Matrix4x3ir = typeof(matrix!(4, 3, int, Major.row));
-alias Matrix4x3ic = typeof(matrix!(4, 3, int, Major.column));
-alias Matrix4x3ul = typeof(matrix!(4, 3, ulong, defaultMajor));
-alias Matrix4x3ulr = typeof(matrix!(4, 3, ulong, Major.row));
-alias Matrix4x3ulc = typeof(matrix!(4, 3, ulong, Major.column));
-alias Matrix4x3l = typeof(matrix!(4, 3, long, defaultMajor));
-alias Matrix4x3lr = typeof(matrix!(4, 3, long, Major.row));
-alias Matrix4x3lc = typeof(matrix!(4, 3, long, Major.column));
-alias Matrix4x3us = typeof(matrix!(4, 3, ushort, defaultMajor));
-alias Matrix4x3usr = typeof(matrix!(4, 3, ushort, Major.row));
-alias Matrix4x3usc = typeof(matrix!(4, 3, ushort, Major.column));
-alias Matrix4x3r = typeof(matrix!(4, 3, real, defaultMajor));
-alias Matrix4x3rr = typeof(matrix!(4, 3, real, Major.row));
-alias Matrix4x3rc = typeof(matrix!(4, 3, real, Major.column));
-alias Matrix4x3cd = typeof(matrix!(4, 3, cdouble, defaultMajor));
-alias Matrix4x3cdr = typeof(matrix!(4, 3, cdouble, Major.row));
-alias Matrix4x3cdc = typeof(matrix!(4, 3, cdouble, Major.column));
-alias Matrix4x4ui = typeof(matrix!(4, 4, uint, defaultMajor));
-alias Matrix4ui = typeof(matrix!(4, 4, uint, defaultMajor));
-alias Matrix4x4uir = typeof(matrix!(4, 4, uint, Major.row));
-alias Matrix4uir = typeof(matrix!(4, 4, uint, Major.row));
-alias Matrix4x4uic = typeof(matrix!(4, 4, uint, Major.column));
-alias Matrix4uic = typeof(matrix!(4, 4, uint, Major.column));
-alias Matrix4x4f = typeof(matrix!(4, 4, float, defaultMajor));
-alias Matrix4f = typeof(matrix!(4, 4, float, defaultMajor));
-alias Matrix4x4fr = typeof(matrix!(4, 4, float, Major.row));
-alias Matrix4fr = typeof(matrix!(4, 4, float, Major.row));
-alias Matrix4x4fc = typeof(matrix!(4, 4, float, Major.column));
-alias Matrix4fc = typeof(matrix!(4, 4, float, Major.column));
-alias Matrix4x4s = typeof(matrix!(4, 4, short, defaultMajor));
-alias Matrix4s = typeof(matrix!(4, 4, short, defaultMajor));
-alias Matrix4x4sr = typeof(matrix!(4, 4, short, Major.row));
-alias Matrix4sr = typeof(matrix!(4, 4, short, Major.row));
-alias Matrix4x4sc = typeof(matrix!(4, 4, short, Major.column));
-alias Matrix4sc = typeof(matrix!(4, 4, short, Major.column));
-alias Matrix4x4d = typeof(matrix!(4, 4, double, defaultMajor));
-alias Matrix4d = typeof(matrix!(4, 4, double, defaultMajor));
-alias Matrix4x4dr = typeof(matrix!(4, 4, double, Major.row));
-alias Matrix4dr = typeof(matrix!(4, 4, double, Major.row));
-alias Matrix4x4dc = typeof(matrix!(4, 4, double, Major.column));
-alias Matrix4dc = typeof(matrix!(4, 4, double, Major.column));
-alias Matrix4x4cf = typeof(matrix!(4, 4, cfloat, defaultMajor));
-alias Matrix4cf = typeof(matrix!(4, 4, cfloat, defaultMajor));
-alias Matrix4x4cfr = typeof(matrix!(4, 4, cfloat, Major.row));
-alias Matrix4cfr = typeof(matrix!(4, 4, cfloat, Major.row));
-alias Matrix4x4cfc = typeof(matrix!(4, 4, cfloat, Major.column));
-alias Matrix4cfc = typeof(matrix!(4, 4, cfloat, Major.column));
-alias Matrix4x4ub = typeof(matrix!(4, 4, ubyte, defaultMajor));
-alias Matrix4ub = typeof(matrix!(4, 4, ubyte, defaultMajor));
-alias Matrix4x4ubr = typeof(matrix!(4, 4, ubyte, Major.row));
-alias Matrix4ubr = typeof(matrix!(4, 4, ubyte, Major.row));
-alias Matrix4x4ubc = typeof(matrix!(4, 4, ubyte, Major.column));
-alias Matrix4ubc = typeof(matrix!(4, 4, ubyte, Major.column));
-alias Matrix4x4b = typeof(matrix!(4, 4, byte, defaultMajor));
-alias Matrix4b = typeof(matrix!(4, 4, byte, defaultMajor));
-alias Matrix4x4br = typeof(matrix!(4, 4, byte, Major.row));
-alias Matrix4br = typeof(matrix!(4, 4, byte, Major.row));
-alias Matrix4x4bc = typeof(matrix!(4, 4, byte, Major.column));
-alias Matrix4bc = typeof(matrix!(4, 4, byte, Major.column));
-alias Matrix4x4cr = typeof(matrix!(4, 4, creal, defaultMajor));
-alias Matrix4cr = typeof(matrix!(4, 4, creal, defaultMajor));
-alias Matrix4x4crr = typeof(matrix!(4, 4, creal, Major.row));
-alias Matrix4crr = typeof(matrix!(4, 4, creal, Major.row));
-alias Matrix4x4crc = typeof(matrix!(4, 4, creal, Major.column));
-alias Matrix4crc = typeof(matrix!(4, 4, creal, Major.column));
-alias Matrix4x4i = typeof(matrix!(4, 4, int, defaultMajor));
-alias Matrix4i = typeof(matrix!(4, 4, int, defaultMajor));
-alias Matrix4x4ir = typeof(matrix!(4, 4, int, Major.row));
-alias Matrix4ir = typeof(matrix!(4, 4, int, Major.row));
-alias Matrix4x4ic = typeof(matrix!(4, 4, int, Major.column));
-alias Matrix4ic = typeof(matrix!(4, 4, int, Major.column));
-alias Matrix4x4ul = typeof(matrix!(4, 4, ulong, defaultMajor));
-alias Matrix4ul = typeof(matrix!(4, 4, ulong, defaultMajor));
-alias Matrix4x4ulr = typeof(matrix!(4, 4, ulong, Major.row));
-alias Matrix4ulr = typeof(matrix!(4, 4, ulong, Major.row));
-alias Matrix4x4ulc = typeof(matrix!(4, 4, ulong, Major.column));
-alias Matrix4ulc = typeof(matrix!(4, 4, ulong, Major.column));
-alias Matrix4x4l = typeof(matrix!(4, 4, long, defaultMajor));
-alias Matrix4l = typeof(matrix!(4, 4, long, defaultMajor));
-alias Matrix4x4lr = typeof(matrix!(4, 4, long, Major.row));
-alias Matrix4lr = typeof(matrix!(4, 4, long, Major.row));
-alias Matrix4x4lc = typeof(matrix!(4, 4, long, Major.column));
-alias Matrix4lc = typeof(matrix!(4, 4, long, Major.column));
-alias Matrix4x4us = typeof(matrix!(4, 4, ushort, defaultMajor));
-alias Matrix4us = typeof(matrix!(4, 4, ushort, defaultMajor));
-alias Matrix4x4usr = typeof(matrix!(4, 4, ushort, Major.row));
-alias Matrix4usr = typeof(matrix!(4, 4, ushort, Major.row));
-alias Matrix4x4usc = typeof(matrix!(4, 4, ushort, Major.column));
-alias Matrix4usc = typeof(matrix!(4, 4, ushort, Major.column));
-alias Matrix4x4r = typeof(matrix!(4, 4, real, defaultMajor));
-alias Matrix4r = typeof(matrix!(4, 4, real, defaultMajor));
-alias Matrix4x4rr = typeof(matrix!(4, 4, real, Major.row));
-alias Matrix4rr = typeof(matrix!(4, 4, real, Major.row));
-alias Matrix4x4rc = typeof(matrix!(4, 4, real, Major.column));
-alias Matrix4rc = typeof(matrix!(4, 4, real, Major.column));
-alias Matrix4x4cd = typeof(matrix!(4, 4, cdouble, defaultMajor));
-alias Matrix4cd = typeof(matrix!(4, 4, cdouble, defaultMajor));
-alias Matrix4x4cdr = typeof(matrix!(4, 4, cdouble, Major.row));
-alias Matrix4cdr = typeof(matrix!(4, 4, cdouble, Major.row));
-alias Matrix4x4cdc = typeof(matrix!(4, 4, cdouble, Major.column));
-alias Matrix4cdc = typeof(matrix!(4, 4, cdouble, Major.column));
-+/
