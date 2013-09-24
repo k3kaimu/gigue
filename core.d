@@ -1146,6 +1146,18 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
     )) ~
 
 
+    (rs == 1 && cs == 1 ?
+    q{
+        auto det() @property
+        {
+            return this[0, 0];
+        }
+
+        alias det this;
+    } : ""
+    ) ~
+
+
     (spec & ETOSpec.opEquals ?
     q{
         bool opEquals(Rhs)(auto ref const Rhs mat)
@@ -1579,6 +1591,10 @@ unittest{
 
     M!(1, 1) m11;
     int valueM11 = m11;
+
+    M!(3, 1) m31;
+    M!(1, 3) m13;
+    valueM11 = m13 * m31;
 
 
     static struct I{
