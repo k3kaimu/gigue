@@ -50,16 +50,6 @@ version(unittest) import std.stdio;
 
 
 /**
-フォーマット指定された文字列と引数から、文字列を作って返します。
-*/
-private string format(T...)(string fmt, auto ref T args)
-{
-    auto app = appender!(string)();
-    app.formattedWrite(fmt, args);
-    return app.data;
-}
-
-/**
 デフォルトでの行列が列優先か行優先のどちらでメモリ上に配置されるかをDlinearColumnMajorという
 */
 /*
