@@ -44,7 +44,7 @@ import std.algorithm,
        std.functional,
        std.range,
        std.traits,
-       std.format;
+       std.string;
 
 version(unittest) import std.stdio;
 
@@ -630,7 +630,9 @@ unittest{
 /**
 Expression Template Operator Species : 式テンプレート演算子の種類
 */
-enum ETOSpec{
+enum ETOSpec : size_t
+{
+    none = 0,
     matrixAddMatrix = (1 << 0),
     matrixSubMatrix = (1 << 1),
     matrixMulMatrix = (1 << 2),
@@ -642,9 +644,14 @@ enum ETOSpec{
     scalarMulMatrix = (1 << 8),
     matrixDivScalar = (1 << 9),
     scalarDivMatrix = (1 << 10),
-    opEquals = (1 << 11),
-    toString = (1 << 12),
-    all = (1 << 13) -1,
+    addScalar = (1 << 11),
+    subScalar = (1 << 12),
+    mulScalar = (1 << 13),
+    divScalar = (1 << 14),
+    opEquals = (1 << 15),
+    toString = (1 << 16),
+    modifiedOperator = addScalar | subScalar | mulScalar | divScalar,
+    all = (1 << 17) -1,
 }
 
 
@@ -1093,22 +1100,22 @@ struct Identity(T){
 ---
 */
 
-template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
+template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 {
     
     enum stringMixin = 
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         static if(is(typeof({enum _unused_ = this.rows;}))) static assert(rows != 0);
     } ~
 
 
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         static if(is(typeof({enum _unused_ = this.cols;})))static assert(cols != 0);
     } ~
 
 
     ( rs == 1 ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         alias cols length;
         alias length opDollar;
 
@@ -1120,10 +1127,33 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
         body{
             return this[0, i];
         }
+
+      static if(is(typeof({this[0] = this[0];})))
+      {
+        auto ref opIndexAssign(S)(S value, size_t i)
+        if(is(typeof(this[0, i] = value)))
+        in{
+            assert(i < this.cols);
+        }
+        body{
+            return this[0, i] = value;
+        }
+
+
+        auto ref opIndexOpAssign(string op, S)(S value, size_t i)
+        if(is(typeof(mixin("this[0, i] " ~ op ~ "= value"))))
+        in{
+            assert(i < this.cols);
+        }
+        body{
+            return mixin("this[0, i] " ~ op ~ "= value");
+        }
+      }
     } : ( cs == 1 ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         alias rows length;
         alias length opDollar;
+
 
         auto ref opIndex(size_t i)
         in{
@@ -1132,24 +1162,60 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
         body{
             return this[i, 0];
         }
+
+      static if(is(typeof({this[0] = this[0];})))
+      {
+        auto ref opIndexAssign(S)(S value, size_t i)
+        if(is(typeof(this[i, 0] = value)))
+        in{
+            assert(i < this.rows);
+        }
+        body{
+            return this[0, i] = value;
+        }
+
+
+        auto ref opIndexOpAssign(string op, S)(S value, size_t i)
+        if(is(typeof(mixin("this[i, 0] " ~ op ~ "= value"))))
+        in{
+            assert(i < this.rows);
+        }
+        body{
+            return mixin("this[i, 0] " ~ op ~ "= value");
+        }
+      }
     } : ""
     )) ~
 
 
     (rs == 1 && cs == 1 ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto det() @property
         {
             return this[0, 0];
         }
 
         alias det this;
+
+
+        auto ref opAssign(S)(S value)
+        if(is(typeof(this[0, 0] = value)))
+        {
+            return this[0, 0] = value;
+        }
+
+
+        auto ref opOpAssign(S)(S value)
+        if(is(typeof(mixin("this[0, 0] " ~ op ~ "= value"))))
+        {
+            return mixin("this[0, 0] " ~ op ~ "= value");
+        }
     } : ""
     ) ~
 
 
     (spec & ETOSpec.opEquals ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         bool opEquals(Rhs)(auto ref const Rhs mat)
         if(isMatrix!Rhs)
         {
@@ -1181,7 +1247,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.toString ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
         @property
         void toString(scope void delegate(const(char)[]) sink, string formatString) @system
@@ -1197,7 +1263,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixAddMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
         if(isMatrix!Rhs)
         in{
@@ -1218,7 +1284,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixSubMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
         if(isMatrix!Rhs)
         in{
@@ -1239,7 +1305,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixMulMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
         if(isMatrix!Rhs)
         in{
@@ -1257,7 +1323,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixAddScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "+", S)(S s)
         if(isScalar!S)
         {
@@ -1269,7 +1335,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarAddMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "+", S)(S s)
         if(isScalar!S)
         {
@@ -1281,7 +1347,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixSubScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "-", S)(S s)
         if(isScalar!S)
         {
@@ -1293,7 +1359,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarSubMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "-", S)(S s)
         if(isScalar!S)
         {
@@ -1305,7 +1371,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixMulScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "*", S)(S s)
         if(isScalar!S)
         {
@@ -1317,7 +1383,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarMulMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "*", S)(S s)
         if(isScalar!S)
         {
@@ -1329,7 +1395,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixDivScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "/", S)(S s)
         if(isScalar!S)
         {
@@ -1341,12 +1407,64 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarDivMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "/", S)(S s)
         if(isScalar!S)
         {
             static assert(isValidOperator!(S, op, typeof(this)));
             return matrixExpression!"/"(s, this);
+        }
+    } : ""
+    ) ~ 
+
+
+    (spec & ETOSpec.addScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "+", S)(S scalar)
+        if(is(typeof(this[0, 0] += scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] +=  scalar;
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.subScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "-", S)(S scalar)
+        if(is(typeof(this[0, 0] -= scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] -=  scalar;
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.mulScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "*", S)(S scalar)
+        if(is(typeof(this[0, 0] *= scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] *=  scalar;
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.divScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "/", S)(S scalar)
+        if(is(typeof(this[0, 0] /= scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] /=  scalar;
         }
     } : ""
     );
@@ -1363,7 +1481,7 @@ template ExpressionOperators(ETOSpec spec, size_t rs, size_t cs)
 template ExpressionOperatorsInferable(size_t spec)
 {
     enum stringMixin = 
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
     bool opEquals(Rhs)(auto ref const Rhs mat)
     if(isMatrix!Rhs && !is(Unqual!Rhs == typeof(this)) && !isInferableMatrix!(Rhs))
     {
@@ -1382,7 +1500,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixAddMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "+", Rhs)(auto ref Rhs mat)
         if(isMatrix!Rhs)
         in{
@@ -1398,7 +1516,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixSubMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "-", Rhs)(auto ref Rhs mat)
         if(isMatrix!Rhs)
         in{
@@ -1414,7 +1532,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixMulMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "*", Rhs)(auto ref Rhs mat)
         if(isMatrix!Rhs)
         in{
@@ -1430,7 +1548,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixAddScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "+", S)(S s)
         if(isScalar!S)
         {
@@ -1442,7 +1560,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.scalarAddMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "+", S)(S s)
         if(isScalar!S)
         {
@@ -1454,7 +1572,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixSubScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "-", S)(S s)
         if(isScalar!S)
         {
@@ -1466,7 +1584,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.scalarSubMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "-", S)(S s)
         if(isScalar!S)
         {
@@ -1478,7 +1596,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixMulScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "*", S)(S s)
         if(isScalar!S)
         {
@@ -1490,7 +1608,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.scalarMulMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "*", S)(S s)
         if(isScalar!S)
         {
@@ -1502,7 +1620,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixDivScalar ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinary(string op : "/", S)(S s)
         if(isScalar!S)
         {
@@ -1513,12 +1631,64 @@ template ExpressionOperatorsInferable(size_t spec)
     ) ~
 
     (spec & ETOSpec.scalarDivMatrix ?
-    q{
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
         auto opBinaryRight(string op : "/", S)(S s)
         if(isScalar!S)
         {
             static assert(isValidOperator!(S, op, typeof(this)));
             return matrixExpression!"/"(s, this);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.addScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "+", S)(S scalar)
+        if(isScalar!S && is(typeof(this[0, 0] += scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] +=  scalar;
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.subScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "-", S)(S scalar)
+        if(isScalar!S && is(typeof(this[0, 0] -= scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] -=  scalar;
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.mulScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "*", S)(S scalar)
+        if(isScalar!S && is(typeof(this[0, 0] *= scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] *=  scalar;
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.divScalar ?
+    format("#line %s \"%s\"", __LINE__+1, __FILE__) ~ q{
+        void opOpAssign(string op : "+", S)(S scalar)
+        if(isScalar!S && is(typeof(this[0, 0] /= scalar)))
+        {
+            foreach(r; 0 .. rows)
+                foreach(c; 0 .. cols)
+                    this[r, c] /=  scalar;
         }
     } : ""
     );
@@ -1539,15 +1709,17 @@ template defaultExprOps(bool isInferable = false)
     enum defaultExprOps = 
     isInferable ?
     q{
-        mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString).stringMixin);
-        const{mixin(ExpressionOperatorsInferable!(ETOSpec.all).stringMixin);}
-        immutable{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString).stringMixin);}
+        //mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString).stringMixin);
+        mixin(ExpressionOperatorsInferable!(ETOSpec.modifiedOperator).stringMixin);
+        const{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.modifiedOperator).stringMixin);}
+        //immutable{mixin(ExpressionOperatorsInferable!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString).stringMixin);}
     }
     :
     q{
-        mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);
-        const{mixin(ExpressionOperators!(ETOSpec.all, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);}
-        immutable{mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);}
+        //mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);
+        mixin(ExpressionOperators!(ETOSpec.modifiedOperator, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);
+        const{mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.modifiedOperator, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);}
+        //immutable{mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opEquals & ~ETOSpec.toString, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);}
     };
 }
 
@@ -1580,6 +1752,7 @@ unittest{
 
 
     M!(1, 1) m11;
+    static assert(isMatrix!(typeof(m11)));
     int valueM11 = m11;
 
     M!(3, 1) m31;
@@ -2490,8 +2663,6 @@ if(r != 0 && c != 0)
         return _array[];
     }
 
-    mixin(defaultExprOps!(false));
-
 
     void opAssign(M)(auto ref M mat)
     if(isValidOperator!(typeof(this), "+", M))
@@ -2529,6 +2700,9 @@ if(r != 0 && c != 0)
     {
         return matrix!(r, c)(_array[]);
     }
+
+
+    mixin(defaultExprOps!(false));
 
 
   private:
@@ -2622,6 +2796,19 @@ unittest{
     static assert(rv1.rows == 1);
     static assert(rv1.cols == 3);
     static assert(rv1.length  == 3);
+
+    rv1[0] = 3;
+    assert(rv1[0] == 3);
+    assert(rv1[1] == 0);
+    assert(rv1[2] == 0);
+    rv1.opOpAssign!"+"(3);
+    assert(rv1[0] == 6);
+    assert(rv1[1] == 3);
+    assert(rv1[2] == 3);
+    rv1[0] += 3;
+    assert(rv1[0] == 9);
+    assert(rv1[1] == 3);
+    assert(rv1[2] == 3);
 
     Rvector!(int, 4) rv2;
     static assert(rv2.rows == 1);
@@ -3554,7 +3741,11 @@ unittest{
 
 
 /*
-auto cross(Major mjr = defaultMajor, V1, V2)(V1 vec1, V2 vec2)
+auto cross(V1, V2)(V1 vec1, V2 vec2)
+if(isVector!V1 && isVector!V2 && )
+{
+    auto m = vec1.crossAsMatrix(vec2);
+}
 */
 
 /**
@@ -3569,31 +3760,24 @@ if(isVector!V1 && isVector!V2)
         alias cols = _vec2.length;
 
 
-        auto opIndex(size_t i, size_t j){ return _vec1[i] * _vec2[j]; }
-        auto opIndex(size_t i, size_t j) const { return _vec1[i] * _vec2[j]; }
-        auto opIndex(size_t i, size_t j) immutable { return _vec1[i] * _vec2[j]; }
-
-      static if(rows == 0 || cols == 0)
-        static struct CheckSize(size_t i, size_t j)
-        {
-            enum isValid = isEqOrEitherEq0(i, rows)
-                        && isEqOrEitherEq0(j, cols);
-
-            static if(isValid)
-            {
-                enum rows = rows == 0 ? r : rows;
-                enum cols = cols == 0 ? c : cols;
-            }
+        auto opIndex(size_t i, size_t j) const
+        in{
+            assert(i < rows);
+            assert(j < cols);
+        }
+        body{
+            return _vec1[i] * _vec2[j];
         }
 
 
-        static if(is(typeof(_opIndex)))
-        mixin(_opIndex);
+        mixin(defaultExprOps!(false));
+
 
       private:
         V1 _vec1;
         V2 _vec2;
     }
+
 
     return Cartesian!()(vec1, vec2);
 }
