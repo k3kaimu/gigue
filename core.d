@@ -35,7 +35,7 @@ Author: Kazuki Komatsu
 License: NYSL
 */
 
-module extml.core;
+module gigue.core;
 
 import std.algorithm,
        std.array,
@@ -1917,7 +1917,7 @@ if(isInferableMatrix!A && A.inferSize(r, c).isValid)
         }
 
 
-      static if(extml.core.hasAssignableElements!A)
+      static if(gigue.core.hasAssignableElements!A)
       {
         void opIndexAssign(E)(E e, size_t i, size_t j)
         in{
@@ -2001,7 +2001,7 @@ body{
         }
 
 
-      static if(extml.core.hasAssignableElements!A)
+      static if(gigue.core.hasAssignableElements!A)
       {
         void opIndexAssign(E)(E e, size_t i, size_t j)
         in{
@@ -2091,7 +2091,7 @@ body{
         }
 
 
-        static if(extml.core.hasAssignableElements!A)
+        static if(gigue.core.hasAssignableElements!A)
         {
           void opIndexAssign(E)(E e, size_t i, size_t j)
           in{
@@ -2889,7 +2889,7 @@ if(isMatrix!A)
         }
 
 
-      static if(extml.core.hasAssignableElements!A)
+      static if(gigue.core.hasAssignableElements!A)
       {
         void opIndexAssign(E)(E e, size_t i, size_t j)
         in{
