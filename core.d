@@ -459,22 +459,34 @@ template isValidOperator(L, string op, R)
         enum isValidOperator = is(typeof(mixin("L.init[0, 0] " ~ op ~ " R.init"))) && isValidOperatorImpl!(L, op, R);
     else static if(isMatrix!R)
         enum isValidOperator = is(typeof(mixin("L.init " ~ op ~ " R.init[0, 0]"))) && isValidOperatorImpl!(L, op, R);
+    else
+        static assert(0);
 }
 
 
 template isValidOperatorImpl(L, string op, R)
 if(isMatrix!L && isMatrix!R && op != "*")
 {
+    struct Inferred(M, size_t r, size_t c)
+    {
+        enum size_t rows = M.inferSize(r, c).rows;
+        enum size_t cols = M.inferSize(r, c).cols;
+
+        auto opIndex(size_t i, size_t j) const { return ElementType!M.init; }
+    }
+
     static if(op != "+" && op != "-")
         enum isValidOperatorImpl = false;
     else static if(isInferableMatrix!L && isInferableMatrix!R)
         enum isValidOperatorImpl = true;
     else static if(isInferableMatrix!L)
     {
-        static if(hasStaticRows!R)
-            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, R.rows, wild), op, R);
+        static if(hasStaticRows!R && hasStaticColumns!R)
+            enum isValidOperatorImpl = L.inferSize(R.rows, R.cols).isValid && isValidOperatorImpl!(Inferred!(L, R.rows, R.cols), op, R);
+        else static if(hasStaticRows!R)
+            enum isValidOperatorImpl = L.inferSize(R.rows, wild).isValid && isValidOperatorImpl!(Inferred!(L, R.rows, wild), op, R);
         else static if(hasStaticColumns!R)
-            enum isValidOperatorImpl = isValidOperatorImpl!(Inferred!(L, wild, R.cols), op, R);
+            enum isValidOperatorImpl = L.inferSize(wild, R.cols).isValid && isValidOperatorImpl!(Inferred!(L, wild, R.cols), op, R);
         else
             enum isValidOperatorImpl = true;
     }
@@ -503,16 +515,6 @@ if(isMatrix!L && isMatrix!R && op != "*")
             enum _isValidC = true;
 
         enum isValidOperatorImpl = _isValidR && _isValidC;
-    }
-
-
-    struct Inferred(M, size_t r, size_t c)
-    if(r == wild || c == wild)
-    {
-        enum size_t rows = M.inferSize(r, c).rows;
-        enum size_t cols = M.inferSize(r, c).cols;
-
-        auto opIndex(size_t i, size_t j){ return M.init[i, j]; }
     }
 }
 
@@ -580,10 +582,12 @@ unittest{
         enum rows = 0, cols = 0;
         T opIndex(size_t i, size_t j) const { return T.init; }
         static InferredResult inferSize(size_t rs, size_t cs){
-            if(isEqOrEitherEq0(rs, cs) && (rs != 0 || cs != 0))
+            if(rs == 0 && cs == 0)
+                return InferredResult(false, 0, 0);
+            else if(rs == 0 || cs == 0)
                 return InferredResult(true, max(rs, cs), max(rs, cs));
             else
-                return InferredResult(false, 0, 0);
+                return InferredResult(true, rs, cs);
         }
     }
     alias Inferable = I!int;
@@ -605,9 +609,9 @@ unittest{
     static assert( isValidOperator!(Dynamic, "+", Static1x2));
 
     static assert( isValidOperator!(Static1x1, "+", Inferable));
-    static assert(!isValidOperator!(Static1x2, "+", Inferable));
+    static assert( isValidOperator!(Static1x2, "+", Inferable));
     static assert( isValidOperator!(Inferable, "+", Static1x1));
-    static assert(!isValidOperator!(Inferable, "+", Static1x2));
+    static assert( isValidOperator!(Inferable, "+", Static1x2));
 
     static assert( isValidOperator!(Static1x1, "*", Static1x1));
     static assert( isValidOperator!(Static1x1, "*", Static1x2));
