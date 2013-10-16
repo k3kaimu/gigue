@@ -122,7 +122,7 @@ enum defaultMajor = Major.row;
 */
 template isMatrix(T)
 {
-    enum bool isMatrix = is(typeof((T m){
+    enum bool isMatrix = is(typeof((const T m){
             size_t rsize = m.rows;
             size_t csize = m.cols;
 
@@ -136,7 +136,7 @@ unittest{
         enum rows = 1;
         enum cols = 1;
 
-        auto opIndex(size_t i, size_t j)
+        auto opIndex(size_t i, size_t j) const
         {
             return i + j;
         }
@@ -150,7 +150,7 @@ unittest{
         enum rows = 0;
         enum cols = 0;
 
-        auto opIndex(size_t i, size_t j)
+        auto opIndex(size_t i, size_t j) const
         {
             return i + j;
         }
@@ -171,7 +171,7 @@ unittest{
         enum rows = r;
         enum cols = c;
 
-        auto opIndex(size_t i, size_t j){return T.init;}
+        auto opIndex(size_t i, size_t j) const {return T.init;}
     }
 
     foreach(T; TT)
@@ -319,8 +319,8 @@ unittest{
         enum cols = 3;
         enum length = 3;
 
-        auto opIndex(size_t i, size_t j){return j;}
-        auto opIndex(size_t i){return i;}
+        auto opIndex(size_t i, size_t j) const {return j;}
+        auto opIndex(size_t i) const {return i;}
     }
 
     static assert(isVector!V);
@@ -345,7 +345,7 @@ unittest{
         enum rows = 1;
         enum cols = 1;
 
-        int opIndex(size_t, size_t)
+        int opIndex(size_t, size_t) const
         {
             return 1;
         }
@@ -378,7 +378,7 @@ unittest{
         enum rows = 1;
         enum cols = 1;
 
-        ref int opIndex(size_t i, size_t j)
+        ref int opIndex(size_t i, size_t j) inout
         {
             static int a;
             return a;
@@ -411,7 +411,7 @@ unittest{
         enum rows = 1;
         enum cols = 1;
 
-        auto opIndex(size_t i, size_t j)
+        auto opIndex(size_t i, size_t j) const
         {
             return i;
         }
@@ -526,7 +526,7 @@ if(isMatrix!L && isMatrix!R && op == "*")
         enum size_t rows = M.inferSize(r, c).rows;
         enum size_t cols = M.inferSize(r, c).cols;
 
-        auto opIndex(size_t i, size_t j){ return M.init[i, j]; }
+        auto opIndex(size_t i, size_t j) const { return M.init[i, j]; }
     }
 
 
@@ -567,18 +567,18 @@ if((isMatrix!L && !isMatrix!R) || (isMatrix!R && !isMatrix!L))
 
 
 unittest{
-    static struct S(T, size_t r, size_t c){enum rows = r; enum cols = c; T opIndex(size_t i, size_t j){return T.init;}}
+    static struct S(T, size_t r, size_t c){enum rows = r; enum cols = c; T opIndex(size_t i, size_t j) const {return T.init;}}
     alias Static1x1 = S!(int, 1, 1);
     alias Static1x2 = S!(int, 1, 2);
     alias Static2x1 = S!(int, 2, 1);
     alias Static2x2 = S!(int, 2, 2);
 
-    static struct D(T){size_t rows = 1, cols = 1; T opIndex(size_t i, size_t j){return T.init;}}
+    static struct D(T){size_t rows = 1, cols = 1; T opIndex(size_t i, size_t j) const {return T.init;}}
     alias Dynamic = D!(int);
 
     static struct I(T){
         enum rows = 0, cols = 0;
-        T opIndex(size_t i, size_t j){return T.init;}
+        T opIndex(size_t i, size_t j) const { return T.init; }
         static InferredResult inferSize(size_t rs, size_t cs){
             if(isEqOrEitherEq0(rs, cs) && (rs != 0 || cs != 0))
                 return InferredResult(true, max(rs, cs), max(rs, cs));
@@ -686,7 +686,7 @@ if(isValidOperator!(A, op, B))
                                                                           : ETOSpec.matrixDivScalar));
 }
 unittest{
-    static struct S(T, size_t r, size_t c){enum rows = r; enum cols = c; T opIndex(size_t i, size_t j){return T.init;}}
+    static struct S(T, size_t r, size_t c){enum rows = r; enum cols = c; T opIndex(size_t i, size_t j) const {return T.init;}}
     alias Matrix2i = S!(int, 2, 2);
 
     static assert(ETOperatorSpec!(Matrix2i, "+", Matrix2i) == ETOSpec.matrixAddMatrix);
@@ -726,49 +726,7 @@ if(isValidOperator!(Lhs, s, Rhs) && (isInferableMatrix!Lhs && isInferableMatrix!
     }
 
 
-    auto ref opIndex(size_t i, size_t j)
-    {
-      static if(etoSpec == ETOSpec.matrixAddMatrix)
-        return this.lhs[i, j] + this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixSubMatrix)
-        return this.lhs[i, j] - this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixMulMatrix)
-      {
-        static assert(0);
-        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
-      }
-      else
-      {
-        static if(isMatrix!Lhs)
-            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
-        else
-            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
-      }
-    }
-
-
-    auto ref opIndex(size_t i, size_t j) const 
-    {
-      static if(etoSpec == ETOSpec.matrixAddMatrix)
-        return this.lhs[i, j] + this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixSubMatrix)
-        return this.lhs[i, j] - this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixMulMatrix)
-      {
-        static assert(0);
-        return typeof(this.lhs[0, 0] + this.rhs[0, 0]).init;
-      }
-      else
-      {
-        static if(isMatrix!Lhs)
-            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
-        else
-            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
-      }
-    }
-
-
-    auto ref opIndex(size_t i, size_t j) immutable
+    auto ref opIndex(size_t i, size_t j) inout
     {
       static if(etoSpec == ETOSpec.matrixAddMatrix)
         return this.lhs[i, j] + this.rhs[i, j];
@@ -953,81 +911,7 @@ if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatri
     }
 
 
-    auto ref opIndex(size_t i, size_t j)
-    in{
-        assert(i < this.rows);
-        assert(j < this.cols);
-    }
-    body{
-      static if(etoSpec == ETOSpec.matrixAddMatrix)
-        return this.lhs[i, j] + this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixSubMatrix)
-        return this.lhs[i, j] - this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixMulMatrix)
-      {
-        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = 0;
-
-        static if(hasStaticColumns!Lhs)
-            immutable cnt = Lhs.cols;
-        else static if(hasStaticRows!Rhs)
-            immutable cnt = Rhs.rows;
-        else static if(hasDynamicColumns!Lhs)
-            immutable cnt = this.lhs.cols;
-        else
-            immutable cnt = this.rhs.rows;
-
-        foreach(k; 0 .. cnt)
-            sum += this.lhs[i, k] * this.rhs[k, j];
-        return sum;
-      }
-      else
-      {
-        static if(isMatrix!Lhs)
-            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
-        else
-            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
-      }
-    }
-
-
-    auto ref opIndex(size_t i, size_t j) const 
-    in{
-        assert(i < this.rows);
-        assert(j < this.cols);
-    }
-    body{
-      static if(etoSpec == ETOSpec.matrixAddMatrix)
-        return this.lhs[i, j] + this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixSubMatrix)
-        return this.lhs[i, j] - this.rhs[i, j];
-      else static if(etoSpec == ETOSpec.matrixMulMatrix)
-      {
-        Unqual!(typeof(this.lhs[0, 0] * this.rhs[0, 0])) sum = 0;
-
-        static if(hasStaticColumns!Lhs)
-            immutable cnt = Lhs.cols;
-        else static if(hasStaticRows!Rhs)
-            immutable cnt = Rhs.rows;
-        else static if(hasDynamicColumns!Lhs)
-            immutable cnt = this.lhs.cols;
-        else
-            immutable cnt = this.rhs.rows;
-
-        foreach(k; 0 .. cnt)
-            sum += this.lhs[i, k] * this.rhs[k, j];
-        return sum;
-      }
-      else
-      {
-        static if(isMatrix!Lhs)
-            return mixin("this.lhs[i, j] " ~ s ~ " this.rhs");
-        else
-            return mixin("this.lhs " ~ s ~ " this.rhs[i, j]");
-      }
-    }
-
-
-    auto ref opIndex(size_t i, size_t j) immutable
+    auto ref opIndex(size_t i, size_t j) inout
     in{
         assert(i < this.rows);
         assert(j < this.cols);
@@ -3128,7 +3012,7 @@ if(isMatrix!A && !isInferableMatrix!A)
         }
 
 
-        auto ref opIndex(size_t i)
+        auto ref opIndex(size_t i) inout
         in{
             assert(_f + i < _b);
         }body{
