@@ -959,6 +959,7 @@ if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatri
     Rhs rhs;
 }
 
+
 /**
 行列に関する演算子の式
 */
@@ -991,6 +992,7 @@ struct Identity(T){
 template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 {
     enum stringMixin = 
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         static if(is(typeof({enum _unused_ = this.rows;}))) static assert(rows != 0);
         static if(is(typeof({enum _unused_ = this.cols;}))) static assert(cols != 0);
@@ -1001,6 +1003,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     ( rs == 1 ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         alias cols length;
         alias length opDollar;
@@ -1036,6 +1039,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
         }
       }
     } : ( cs == 1 ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         alias rows length;
         alias length opDollar;
@@ -1075,6 +1079,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (rs == 1 && cs == 1 ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto det() const @property
         {
@@ -1101,6 +1106,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.opEquals ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         bool opEquals(Rhs)(auto ref const Rhs mat) const
         if(isMatrix!Rhs)
@@ -1133,6 +1139,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.toString ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
         @property
@@ -1149,6 +1156,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixAddMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "+", Rhs)(auto ref Rhs mat) const
         if(isMatrix!Rhs)
@@ -1170,6 +1178,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixSubMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "-", Rhs)(auto ref Rhs mat) const
         if(isMatrix!Rhs)
@@ -1191,6 +1200,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixMulMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "*", Rhs)(auto ref Rhs mat) const
         if(isMatrix!Rhs)
@@ -1209,6 +1219,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixAddScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "+", S)(S s) const
         if(isScalar!S)
@@ -1221,6 +1232,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarAddMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "+", S)(S s) const
         if(isScalar!S)
@@ -1233,6 +1245,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixSubScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "-", S)(S s) const
         if(isScalar!S)
@@ -1245,6 +1258,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarSubMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "-", S)(S s) const
         if(isScalar!S)
@@ -1257,6 +1271,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixMulScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "*", S)(S s) const
         if(isScalar!S)
@@ -1269,6 +1284,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarMulMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "*", S)(S s) const
         if(isScalar!S)
@@ -1281,6 +1297,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.matrixDivScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "/", S)(S s) const
         if(isScalar!S)
@@ -1293,6 +1310,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.scalarDivMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "/", S)(S s) const
         if(isScalar!S)
@@ -1305,6 +1323,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.addScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "+", S)(S scalar)
         if(is(typeof(this[0, 0] += scalar)))
@@ -1318,6 +1337,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.subScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "-", S)(S scalar)
         if(is(typeof(this[0, 0] -= scalar)))
@@ -1331,6 +1351,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.mulScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "*", S)(S scalar)
         if(is(typeof(this[0, 0] *= scalar)))
@@ -1344,6 +1365,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
 
     (spec & ETOSpec.divScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "/", S)(S scalar)
         if(is(typeof(this[0, 0] /= scalar)))
@@ -1358,6 +1380,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 
     ((spec & ETOSpec.swizzle) && (rs == 1 || cs == 1) ? 
         (rs*cs >= 1 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref a() inout @property { return this[0]; }
             alias x = a;
@@ -1366,6 +1389,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
         } : ""
         ) ~ 
         (rs*cs >= 2 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref b() inout @property { return this[1]; }
             alias y = b;
@@ -1374,6 +1398,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
         } : ""
         ) ~ 
         (rs*cs >= 3 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref c() inout @property { return this[2]; }
             alias z = c;
@@ -1381,6 +1406,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
         } : ""
         ) ~ 
         (rs*cs >= 4 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref d() inout @property { return this[3]; }
             alias k = d;
@@ -1388,21 +1414,25 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
         } : ""
         ) ~ 
         (rs*cs >= 5 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref e() inout @property { return this[4]; }
         } : ""
         ) ~ 
         (rs*cs >= 6 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref f() inout @property { return this[5]; }
         } : ""
         ) ~ 
         (rs*cs >= 7 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref g() inout @property { return this[6]; }
         } : ""
         ) ~ 
         (rs*cs >= 8 ?
+        format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
         q{
             auto ref h() inout @property { return this[7]; }
         } : ""
@@ -1421,25 +1451,27 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 template ExpressionOperatorsInferable(size_t spec)
 {
     enum stringMixin = 
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
-    bool opEquals(Rhs)(auto ref in Rhs mat) const
-    if(isMatrix!Rhs && !is(Unqual!Rhs == typeof(this)) && !isInferableMatrix!(Rhs))
-    {
-        static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
+        bool opEquals(Rhs)(auto ref in Rhs mat) const
+        if(isMatrix!Rhs && !is(Unqual!Rhs == typeof(this)) && !isInferableMatrix!(Rhs))
+        {
+            static assert(isValidOperator!(Unqual!(typeof(this)), "+", Rhs));
 
-        if(!this.inferSize(mat.rows, mat.cols).isValid)
-            return false;
+            if(!this.inferSize(mat.rows, mat.cols).isValid)
+                return false;
 
-        foreach(i; 0 .. mat.rows)
-            foreach(j; 0 .. mat.cols)
-                if(this[i, j] != mat[i, j])
-                    return false;
-        return true;
-    }
+            foreach(i; 0 .. mat.rows)
+                foreach(j; 0 .. mat.cols)
+                    if(this[i, j] != mat[i, j])
+                        return false;
+            return true;
+        }
     } ~
 
 
     (spec & ETOSpec.matrixAddMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "+", Rhs)(auto ref const Rhs mat) const
         if(isMatrix!Rhs)
@@ -1456,6 +1488,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixSubMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "-", Rhs)(auto ref const Rhs mat) const
         if(isMatrix!Rhs)
@@ -1472,6 +1505,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixMulMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "*", Rhs)(auto ref const Rhs mat) const
         if(isMatrix!Rhs)
@@ -1488,6 +1522,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixAddScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "+", S)(const S s) const
         if(isScalar!S)
@@ -1500,6 +1535,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.scalarAddMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "+", S)(const S s) const
         if(isScalar!S)
@@ -1512,6 +1548,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixSubScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "-", S)(const S s) const
         if(isScalar!S)
@@ -1524,6 +1561,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.scalarSubMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "-", S)(const S s) const
         if(isScalar!S)
@@ -1536,6 +1574,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixMulScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "*", S)(const S s) const
         if(isScalar!S)
@@ -1548,6 +1587,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.scalarMulMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "*", S)(const S s) const
         if(isScalar!S)
@@ -1560,6 +1600,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.matrixDivScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinary(string op : "/", S)(const S s) const
         if(isScalar!S)
@@ -1571,6 +1612,7 @@ template ExpressionOperatorsInferable(size_t spec)
     ) ~
 
     (spec & ETOSpec.scalarDivMatrix ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         auto opBinaryRight(string op : "/", S)(const S s) const
         if(isScalar!S)
@@ -1583,6 +1625,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.addScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "+", S)(const S scalar)
         if(isScalar!S && is(typeof(this[0, 0] += scalar)))
@@ -1596,6 +1639,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.subScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "-", S)(const S scalar)
         if(isScalar!S && is(typeof(this[0, 0] -= scalar)))
@@ -1609,6 +1653,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.mulScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "*", S)(const S scalar)
         if(isScalar!S && is(typeof(this[0, 0] *= scalar)))
@@ -1622,6 +1667,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
     (spec & ETOSpec.divScalar ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opOpAssign(string op : "+", S)(const S scalar)
         if(isScalar!S && is(typeof(this[0, 0] /= scalar)))
