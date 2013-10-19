@@ -41,8 +41,10 @@ import std.algorithm,
        std.array,
        std.ascii,
        std.conv,
+       std.exception,
        std.format,
        std.functional,
+       std.math,
        std.range,
        std.traits,
        std.typecons,
@@ -730,7 +732,7 @@ if(isValidOperator!(Lhs, s, Rhs) && (isInferableMatrix!Lhs && isInferableMatrix!
     }
 
 
-    auto ref opIndex(size_t i, size_t j) inout
+    auto opIndex(size_t i, size_t j) const
     {
       static if(etoSpec == ETOSpec.matrixAddMatrix)
         return this.lhs[i, j] + this.rhs[i, j];
@@ -915,7 +917,7 @@ if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatri
     }
 
 
-    auto ref opIndex(size_t i, size_t j) inout
+    auto opIndex(size_t i, size_t j) const
     in{
         assert(i < this.rows);
         assert(j < this.cols);
@@ -1143,7 +1145,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
     q{
         /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
         @property
-        void toString(scope void delegate(const(char)[]) sink, string formatString) const
+        void toString(scope void delegate(const(char)[]) sink, string formatString) const @system
         {
             //sink(formatString);
             //formattedWrite(sink, formatString.replace("%r$", "%2$").replace("%c$", "%3$"), this.toRange!(Major.row), this.rows, this.cols);
@@ -2394,13 +2396,13 @@ struct DMatrix(T, size_t rs = 0, size_t cs = 0, Major mjr = Major.row)
 
     @property
     void noAlias(M)(auto ref M mat)
-    if(isValidOperator!(typeof(this), "+", M) && ((!r || !hasStaticRows!M) || is(typeof({static assert(this.rows == M.rows);})))
-                                              && ((!c || !hasStaticColumns!M) || is(typeof({static assert(this.cols == M.cols);}))))
+    if(isValidOperator!(typeof(this), "+", M) && ((!rs || !hasStaticRows!M) ||    is(typeof({static assert(this.rows == M.rows);})))
+                                              && ((!cs || !hasStaticColumns!M) || is(typeof({static assert(this.cols == M.cols);}))))
     in{
-      static if(r)
+      static if(rs)
         assert(this.rows == mat.rows);
 
-      static if(c)
+      static if(cs)
         assert(this.cols == mat.cols);
     }
     body{
@@ -2412,19 +2414,34 @@ struct DMatrix(T, size_t rs = 0, size_t cs = 0, Major mjr = Major.row)
                   cl = mat.cols,
                   n = rl * cl;
 
+      static if(is(typeof(_array) == T[]))
+      {
         if(_array.length < n)
             _array.length = n;
+      }
+      else
+      {
+        immutable x = (major == Major.row) ? rl : cl,
+                  y = (major == Major.row) ? cl : rl;
 
-        static if(!r)
+        if(_array.length < x)
+            _array.length = x;
+
+        foreach(ref e; _array)
+            if(e.length < y)
+                e.length = y;
+      }
+
+        static if(!rs)
           this.rows = rl;
 
-        static if(!c)
+        static if(!cs)
           this.cols = cl;
 
         foreach(i; 0 .. rl)
             foreach(j; 0 .. cl)
             {
-              static if(r == 1 || c == 1)
+              static if(rs == 1 || cs == 1)
                 _array[i+j] = mat[i, j];
               static if(major == Major.row)
                   _array[i][j] = mat[i, j];
@@ -2571,7 +2588,7 @@ unittest{
 }
 
 
-auto matrix(Major mjr = Major.row, T, size_t N, size_t M)(auto ref T[M][N] arr)
+auto matrix(Major mjr = Major.row, T, size_t N, size_t M)(ref T[M][N] arr)
 {
   static if(mjr == Major.row)
     DMatrix!(T, N, M, mjr) dst;
@@ -2601,7 +2618,7 @@ unittest{
 }
 
 auto matrix(Major mjr = Major.row, A)(A mat)
-if(isMatrix!A && isInferableMatrix!A)
+if(isMatrix!A && !isInferableMatrix!A)
 {
   static if(hasStaticRows!A && hasStaticColumns!A)
     DMatrix!(ElementType!A, A.rows, A.cols, mjr) dst;
@@ -4034,4 +4051,279 @@ unittest{
     assert(v1.cartesian(v2) == v1 * v2);
     static assert(hasStaticRows!(typeof(v1.cartesian(v2))));
     static assert(hasStaticColumns!(typeof(v1.cartesian(v2))));
+}
+
+
+
+/**
+置換行列を作ります
+*/
+auto permutation(size_t size = wild, Integer)(const Integer[] pos) pure nothrow @safe
+if(isIntegral!Integer)
+in{
+    foreach(e; pos)
+        assert(e < pos.length);
+
+  static if(size != wild)
+    assert(pos.length == size);
+}
+body{
+    static struct Permutation
+    {
+      static if(size != wild)
+        enum rows = size;
+      else
+        size_t rows() pure nothrow @safe const @property { return _pos.length; }
+
+        alias cols = rows;
+
+
+        auto opIndex(size_t i, size_t j) pure nothrow @safe const 
+        {
+            return _pos[i] == j ? 1 : 0;
+        }
+
+
+        mixin(defaultExprOps!(false));
+
+
+        @property auto inverse() pure nothrow @safe const
+        {
+            static struct InvPermutation
+            {
+                static if(size != wild)
+                enum rows = size;
+              else
+                size_t rows() pure nothrow @safe const @property { return _pos.length; }
+
+                alias cols = rows;
+
+
+                auto opIndex(size_t i, size_t j) pure nothrow @safe const
+                {
+                    return _pos[j] == i ? 1 : 0;
+                }
+
+
+                mixin(defaultExprOps!(false));
+
+
+                @property auto inverse() pure nothrow @safe const
+                {
+                    return Permutation(_pos);
+                }
+
+
+              private:
+                const(Integer)[] _pos;
+            }
+
+
+            return InvPermutation(_pos);
+        }
+
+
+      private:
+        const(Integer)[] _pos;
+    }
+
+
+    return Permutation(pos);
+}
+
+
+
+struct PLU(M)
+if(isMatrix!M && !isInferableMatrix!M)
+{
+    alias rows = lu.rows;
+    alias cols = lu.cols;
+    size_t[] piv;
+    bool isEvenP;
+    M lu;
+
+
+    auto p() pure nothrow @safe const
+    {
+        return permutation(piv);
+    }
+
+
+
+    auto l() pure nothrow @safe
+    {
+        static struct L()
+        {
+          static if(hasStaticRows!M)
+            enum rows = M.rows;
+          else static if(hasStaticColumns!M)
+            enum rows = M.cols;
+          else
+            size_t rows() const  @property { return _lu.rows; }
+
+            alias cols = rows;
+
+
+            auto opIndex(size_t i, size_t j) const
+            in{
+                assert(i < rows);
+                assert(j < cols);
+            }
+            body{
+                if(i == j)
+                    return 1;
+                else if(i < j)
+                    return 0;
+                else
+                    return _lu[i, j];
+            }
+
+
+            mixin(defaultExprOps!(false));
+
+
+          private:
+            M _lu;
+        }
+
+
+        return L!()(lu);
+    }
+
+
+
+    auto u() pure nothrow @safe
+    {
+        static struct U()
+        {
+          static if(hasStaticRows!M)
+            enum rows = M.rows;
+          else static if(hasStaticColumns!M)
+            enum rows = M.cols;
+          else
+            size_t rows() const  @property { return _lu.rows; }
+
+            alias cols = rows;
+
+
+            auto opIndex(size_t i, size_t j) const
+            in{
+                assert(i < rows);
+                assert(j < cols);
+            }
+            body{
+                if(i > j)
+                    return 0;
+                else
+                    return _lu[i, j];
+            }
+
+
+            mixin(defaultExprOps!(false));
+
+
+          private:
+            M _lu;
+        }
+
+
+        return U!()(lu);
+    }
+}
+
+
+/**
+In-Placeで、行列をLU分解します。
+
+"Numerical Recipes in C"
+*/
+PLU!(A) pluDecomposeInPlace(A)(ref A m)
+if(isMatrix!A && isFloatingPoint!(ElementType!A) && hasLvalueElements!A && (!hasStaticRows!A || !hasStaticColumns!A || is(typeof({static assert(A.rows == A.cols);}))))
+in{
+    assert(m.rows == m.cols);
+}
+body{
+    immutable size = m.rows;
+    scope vv = new real[size];
+    bool isEvenP;
+    size_t[] idx = new size_t[size];
+
+    foreach(i, ref e; idx)
+        e = i;
+
+    foreach(i; 0 .. size){
+        real big = 0;
+
+        foreach(j; 0 .. size){
+            immutable temp = m[i, j].abs();
+            if(temp > big)
+                big = temp;
+        }
+
+        if(big == 0) enforce("Input matrix is a singular matrix");
+
+        vv[i] = 1.0 / big;
+    }
+
+
+    foreach(j; 0 .. size){
+        foreach(i; 0 .. j){
+            real sum = m[i, j];
+            foreach(k; 0 .. i) sum -= m[i, k] * m[k, j];
+            m[i, j] = sum;
+        }
+
+        real big = 0;
+        size_t imax;
+        foreach(i; j .. size){
+            real sum = m[i, j];
+            foreach(k; 0 .. j) sum -= m[i, k] * m[k, j];
+            m[i, j] = sum;
+
+            immutable dum = vv[i] * sum.abs();
+            if(dum >= big){
+                big = dum;
+                imax = i;
+            }
+        }
+
+        if(j != imax){
+            foreach(k; 0 .. size)
+                swap(m[imax, k], m[j, k]);
+
+            isEvenP = !isEvenP;
+            vv[imax] = vv[j];
+
+            swap(idx[j], idx[imax]);
+        }
+
+        //idx[j] = imax;
+
+        //if(m[j, j] == 0) m[j, j] = 1.0E-20;
+
+        if(j != size-1){
+            immutable dum = 1 / m[j, j];
+            foreach(i; j+1 .. size)
+                m[i, j] *= dum;
+        }
+    }
+
+    return PLU!A(idx, isEvenP, m);
+}
+unittest{
+    real[3][3] mStack = [[1, 2, 2],
+                         [2, 1, 1],
+                         [2, 2, 2]];
+
+    auto m = matrix(mStack);
+
+    SMatrix!(real, 3, 3) org = m;
+    auto plu = m.pluDecomposeInPlace();
+
+    //SMatrix!(real, 3, 3) result = plu.l * plu.u;        // LU
+    //org = plu.p * org;                                  // PA
+    SMatrix!(real, 3, 3) result = plu.p.inverse * plu.l * plu.u;
+
+    foreach(i; 0 .. 3) foreach(j; 0 .. 3)
+        assert(approxEqual(result[i, j], org[i, j]));   // A = P^(-1)LU
 }
