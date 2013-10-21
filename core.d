@@ -655,9 +655,10 @@ enum ETOSpec : size_t
     divScalar = (1 << 14),
     opEquals = (1 << 15),
     toString = (1 << 16),
-    swizzle = (1 << 17),
-    modifiedOperator = addScalar | subScalar | mulScalar | divScalar,
-    all = (1 << 18) -1,
+    opAssign = (1 << 17),
+    swizzle = (1 << 18),
+    modifiedOperator = addScalar | subScalar | mulScalar | divScalar | opAssign,
+    all = (1 << 19) -1,
 }
 
 
@@ -1143,7 +1144,6 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
     (spec & ETOSpec.toString ?
     format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
-        /*   //dmd bug : toStringをONにすると、メモリをバカ食いする事象*/
         @property
         void toString(scope void delegate(const(char)[]) sink, string formatString) const @system
         {
@@ -1152,6 +1152,29 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
             foreach(i; 0 .. this.rows)
                 foreach(j; 0 .. this.cols)
                     formattedWrite(sink, "%s, ", this[i, j]);
+        }
+    } : ""
+    ) ~
+
+
+    (spec & ETOSpec.opAssign ?
+    format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
+    q{
+        void opAssign(M)(M m)
+        if(isMatrix!M && is(typeof(this[0, 0] = m[0, 0])))
+        in{
+            static if(isInferableMatrix!M)
+                assert(m.inferSize(this.rows, this.cols).isValid);
+            else
+            {
+                assert(m.rows == this.rows);
+                assert(m.cols == this.cols);
+            }
+        }
+        body{
+            foreach(i; 0 .. this.rows)
+                foreach(j; 0 .. this.cols)
+                    this[i, j] = m[i, j];
         }
     } : ""
     ) ~
@@ -2349,7 +2372,8 @@ struct DMatrix(T, size_t rs = 0, size_t cs = 0, Major mjr = Major.row)
     }
 
 
-    mixin(defaultExprOps!(false));
+    mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opAssign, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);
+    //mixin(defaultExprOps!(false));
 
 
     void opAssign(M)(auto ref M mat)
@@ -2729,7 +2753,8 @@ if(rs != 0 && cs != 0)
     }
 
 
-    mixin(defaultExprOps!(false));
+    mixin(ExpressionOperators!(ETOSpec.all & ~ETOSpec.opAssign, mixin(is(typeof({enum _unused_ = rows;})) ? "this.rows" : "wild"), mixin(is(typeof({enum _unused_ = cols;})) ? "this.cols" : "wild")).stringMixin);
+    //mixin(defaultExprOps!(false));
 
 
   private:
