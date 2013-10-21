@@ -3956,8 +3956,6 @@ if(isMatrix!A && !isInferableMatrix!A)
                 A _m;
             }
 
-            static auto create(M)(size_t idx, M m) pure nothrow @safe { return ; }
-
 
             return RowVectorByIndex!()(i + _idx, _m);
         }
