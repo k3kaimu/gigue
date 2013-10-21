@@ -3915,6 +3915,167 @@ unittest{
 
 
 /**
+行ベクトルのランダムアクセスレンジ
+*/
+auto rowVectors(A)(A mat) @property
+if(isMatrix!A && !isInferableMatrix!A)
+{
+    static struct RowVectors()
+    {
+        auto front() @property { return this.opIndex(0); }
+        auto back() @property { return this.opIndex(_end-1); }
+        void popFront() @property { ++_idx; }
+        void popBack() @property { --_end; }
+        bool empty() @property const { return _idx == _end; }
+        auto save() @property { return this; }
+
+
+
+        auto opIndex(size_t i)
+        {
+            static struct RowVectorByIndex()
+            {
+                alias rows = _m.rows;
+                enum cols = 1;
+
+
+                auto ref opIndex(size_t i, size_t j) inout
+                in{
+                    assert(i < rows);
+                    assert(j < cols);
+                }
+                body{
+                    return _m[i, _idx];
+                }
+
+
+                mixin(defaultExprOps!(false));
+
+
+                size_t _idx;
+                A _m;
+            }
+
+            static auto create(M)(size_t idx, M m) pure nothrow @safe { return ; }
+
+
+            return RowVectorByIndex!()(i + _idx, _m);
+        }
+
+
+        size_t length() const @property
+        {
+            return _end - _idx;
+        }
+
+
+        alias opDispatch = length;
+
+      private:
+        size_t _idx;
+        size_t _end;
+        A _m;
+    }
+
+
+    return RowVectors!()(0, mat.cols, mat);
+}
+unittest
+{
+    real[3][3] mStack = [[1, 2, 2],
+                         [2, 1, 1],
+                         [2, 2, 2]];
+
+    auto r = matrix(mStack).rowVectors;
+
+    static assert(isRandomAccessRange!(typeof(r)));
+
+    foreach(i; 0 .. 3)
+        foreach(j; 0 .. 3)
+            assert(r[i][j] == mStack[j][i]);
+}
+
+
+/**
+行ベクトルのランダムアクセスレンジ
+*/
+auto columnVectors(A)(A mat) @property
+if(isMatrix!A && !isInferableMatrix!A)
+{
+    static struct ColumnVectors()
+    {
+        auto front() @property { return this.opIndex(0); }
+        auto back() @property { return this.opIndex(_end-1); }
+        void popFront() @property { ++_idx; }
+        void popBack() @property { --_end; }
+        bool empty() @property const { return _idx == _end; }
+        auto save() @property { return this; }
+
+
+
+        auto opIndex(size_t i)
+        {
+            static struct ColumnVectorByIndex()
+            {
+                enum rows = 1;
+                alias cols = _m.cols;
+
+
+                auto ref opIndex(size_t i, size_t j) inout
+                in{
+                    assert(i < rows);
+                    assert(j < cols);
+                }
+                body{
+                    return _m[_idx, j];
+                }
+
+
+                mixin(defaultExprOps!(false));
+
+
+                size_t _idx;
+                A _m;
+            }
+
+            return ColumnVectorByIndex!()(i + _idx, _m);
+        }
+
+
+        size_t length() const @property
+        {
+            return _end - _idx;
+        }
+
+
+        alias opDispatch = length;
+
+      private:
+        size_t _idx;
+        size_t _end;
+        A _m;
+    }
+
+
+    return ColumnVectors!()(0, mat.rows, mat);
+}
+unittest
+{
+    real[3][3] mStack = [[1, 2, 2],
+                         [2, 1, 1],
+                         [2, 2, 2]];
+
+    auto r = matrix(mStack).columnVectors;
+
+    static assert(isRandomAccessRange!(typeof(r)));
+
+    foreach(i; 0 .. 3)
+        foreach(j; 0 .. 3)
+            assert(r[i][j] == mStack[i][j]);
+}
+
+
+/**
 行列の跡(trace)を返します。正方行列についてのみ定義されます
 */
 ElementType!A trace(A)(A mat)
