@@ -2288,6 +2288,13 @@ struct DMatrix(T, size_t rs = 0, size_t cs = 0, Major mjr = Major.row)
     enum major = mjr;
 
 
+    this(M)(M m)
+    if(!is(M == typeof(this)) && isMatrix!M && is(typeof(this + m)))
+    {
+        this.noAlias = m;
+    }
+
+
     static if(rs)
         enum size_t rows = rs;
     else{
@@ -2505,7 +2512,11 @@ in{
 }
 body{
     static if(r == 1 || c == 1)
-      return typeof(return)(arr);
+    {
+      typeof(return) dst;
+      dst._array = arr;
+      return dst;
+    }
     else
     {
       immutable rs = r == 0 ? arr.length / c : r;
