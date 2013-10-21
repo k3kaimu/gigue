@@ -4255,8 +4255,7 @@ unittest{
 /**
 置換行列を作ります
 */
-auto permutation(size_t size = wild, Integer)(const Integer[] pos) pure nothrow @safe
-if(isIntegral!Integer)
+auto permutation(size_t size = wild, size_t)(const size_t[] pos) pure nothrow @safe
 in{
     foreach(e; pos)
         assert(e < pos.length);
@@ -4312,7 +4311,7 @@ body{
 
 
               private:
-                const(Integer)[] _pos;
+                const(size_t)[] _pos;
             }
 
 
@@ -4320,8 +4319,14 @@ body{
         }
 
 
+        @property const(size_t)[] exchangeTable() pure nothrow @safe const
+        {
+            return _pos;
+        }
+
+
       private:
-        const(Integer)[] _pos;
+        const(size_t)[] _pos;
     }
 
 
@@ -4329,12 +4334,23 @@ body{
 }
 
 
+template isPermutationMatrix(A)
+{
+    enum isPermutationMatrix = isMatrix!A && is(Unqual!(typeof(A.init.exchangeTable)) : size_t[]);
+}
+
+
 
 struct PLU(M)
-if(isMatrix!M && !isInferableMatrix!M)
+if(isMatrix!M && !isInferableMatrix!M && isFloatingPoint!(ElementType!M))
 {
+  static if(hasStaticRows!M)
     alias rows = lu.rows;
-    alias cols = lu.cols;
+  else
+    @property size_t rows() pure nothrow @safe const { return piv.length; }
+
+    alias cols = rows;
+
     size_t[] piv;
     bool isEvenP;
     M lu;
@@ -4425,6 +4441,73 @@ if(isMatrix!M && !isInferableMatrix!M)
 
 
         return U!()(lu);
+    }
+
+
+    /**
+    Ax = bとなるxを解きます
+    */
+    auto solveInPlace(V)(V b)
+    if(isVector!V && isFloatingPoint!(ElementType!V) && is(typeof({b[0] = real.init;})))
+    in{
+        assert(b.length == rows);
+    }
+    body{
+        /*
+        Ax = bの両辺にPをかけることにより
+        PAx = Pbとなるが、LU分解によりPA = LUであるから、
+        LUx = Pbである。
+
+        ここで、y=Uxとなるyベクトルを考える。
+        Ly = Pbである。
+        Lは下三角行列なので、簡単にyベクトルは求まる。
+
+        次に、Ux=yより、xベクトルを同様に求めれば良い
+        */
+
+        immutable size_t size = rows;
+
+        // b <- Pb
+        b = this.p * b;
+
+        // Ly=Pbからyを求める
+        foreach(i; 1 .. size)
+            foreach(j; 0 .. i)
+                b[i] -= lu[i, j] * b[j];
+
+        // Ux=Py
+        foreach_reverse(i; 0 .. size){
+            foreach_reverse(j; i+1 .. size)
+                b[i] -= lu[i, j] * b[j];
+
+            b[i] /= lu[i, i];
+        }
+    }
+
+
+    /**
+    逆行列を求める
+    */
+    M inverse() @property
+    {
+        immutable size_t size = lu.rows;
+
+        M m = identity!(ElementType!M)().congeal(size, size);
+
+        foreach(i; 0 .. lu.cols)
+            this.solveInPlace(m.rowVectors[i]);
+
+        return m;
+    }
+
+
+    auto det() @property
+    {
+        ElementType!M dst = isEvenP ? 1 : -1;
+        foreach(i; 0 .. rows)
+            dst *= lu[i, i];
+
+        return dst;
     }
 }
 
@@ -4517,10 +4600,43 @@ unittest{
     SMatrix!(real, 3, 3) org = m;
     auto plu = m.pluDecomposeInPlace();
 
-    //SMatrix!(real, 3, 3) result = plu.l * plu.u;        // LU
-    //org = plu.p * org;                                  // PA
     SMatrix!(real, 3, 3) result = plu.p.inverse * plu.l * plu.u;
 
     foreach(i; 0 .. 3) foreach(j; 0 .. 3)
         assert(approxEqual(result[i, j], org[i, j]));   // A = P^(-1)LU
+
+    assert(approxEqual(plu.det, 0));
+}
+
+unittest{
+    real[3][3] mStack = [[2, 4, 2],
+                         [4, 10, 3],
+                         [3, 7, 1]];
+
+    auto m = mStack.matrix();
+
+    SMatrix!(real, 3, 3) org = m;
+    auto plu = m.pluDecomposeInPlace();
+
+    auto v = matrix!(3, 1)(cast(real[])[8, 17, 11]);
+
+    plu.solveInPlace(v);
+    foreach(i; 0 .. 3)
+        assert(approxEqual(v[i], 1));
+}
+
+unittest{
+    real[3][3] mStack = [[2, 4, 2],
+                         [4, 10, 3],
+                         [3, 7, 1]];
+
+    auto m = mStack.matrix();
+
+    SMatrix!(real, 3, 3) org = m;
+    auto plu = m.pluDecomposeInPlace();
+    auto iden = org * plu.inverse;
+    
+    foreach(i; 0 .. 3)
+        foreach(j; 0 .. 3)
+            assert(approxEqual(iden[i, j], identity!real[i, j]));
 }
