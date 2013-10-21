@@ -5,9 +5,8 @@ Boost::uBlas目指そうと思ったけどuBlasそんなに使ったことない
 特徴は
 ・ET使ってるから遅延評価してるらしい
 ・ET使ってるからコンパイラ酷使するらしい
-・静的大きさがメインだけど、もちろん動的大きさも視野に入れて設計したらしい
+・静的大きさと動的大きさの行列の両方を表現できるらしい
 ・identityとかonesとか、特殊な行列はそもそも大きさを持たないらしい
-・LU分解とそれを使った逆行列ぐらいはそのうち入れるらしい
 ・疎行列とかそういう特殊行列も入れたいらしい
 ・そんな時間ない気がするらしい
 ・とにかく、現時点ではコア機能しか使えないらしい
@@ -17,8 +16,6 @@ Boost::uBlas目指そうと思ったけどuBlasそんなに使ったことない
 ・素直にBLAS, LAPACKをつかいましょう。
 
 TODO:
-外積,
-LU分解, 逆行列,
 共役転置
 
 型としての行列の種別
@@ -26,8 +23,6 @@ LU分解, 逆行列,
 
 高速化とか
 ・Blas
-
-特定行列の最適化(identity * A == AとかA.transpose.transpose == A)
 
 
 Author: Kazuki Komatsu
@@ -68,8 +63,7 @@ else
 enum size_t wild = 0;       /// inferableMatrix
 
 /**
-四則演算が定義されている型。
-inout(ubyte)からinout(creal)などまで。
+四則演算が定義されている型であればtrueとなる
 */
 template isScalar(T){
     enum bool isScalar = is(typeof(
@@ -85,6 +79,8 @@ template isScalar(T){
             bool b = *a == *a;
         }));
 }
+
+///
 unittest{
     import std.bigint, std.numeric, std.typetuple;
 
@@ -115,12 +111,14 @@ enum Major{
     column,
 }
 
+/**
+デフォルトでの行列の格納方式は「行優先」です。
+*/
 enum defaultMajor = Major.row;
 
 
 /**
-行列型か判定します。
-行列型Tは次のコードがコンパイル可能です。
+行列型かどうかを判定します
 */
 template isMatrix(T)
 {
@@ -132,6 +130,8 @@ template isMatrix(T)
             //static assert(isScalar!(typeof(e)));
         }));
 }
+
+///
 unittest{
     static struct S
     {
@@ -146,6 +146,8 @@ unittest{
 
     static assert(isMatrix!S);
 }
+
+///
 unittest{
     static struct S
     {
@@ -160,6 +162,8 @@ unittest{
 
     static assert(isMatrix!S);
 }
+
+///
 unittest{
     import std.bigint, std.typetuple;
     alias TT = TypeTuple!(ubyte, ushort, uint, ulong,
@@ -186,7 +190,7 @@ unittest{
 
 
 /**
-行のサイズが静的に決定されるか
+行の大きさが静的な行列型かどうか判定します
 */
 template hasStaticRows(T)
 {
@@ -198,7 +202,7 @@ template hasStaticRows(T)
 
 
 /**
-列のサイズが静的に決定されるか
+列の大きさが静的な行列型かどうか判定します
 */
 template hasStaticColumns(T)
 {
@@ -210,7 +214,7 @@ template hasStaticColumns(T)
 
 
 /**
-サイズが静的に決定されるか
+大きさが静的なベクトル型かどうか判定します
 */
 template hasStaticLength(T)
 {
@@ -222,7 +226,7 @@ template hasStaticLength(T)
 
 
 /**
-行のサイズが動的に変化する
+行の大きさが動的な行列型かどうか判定します
 */
 template hasDynamicRows(T)
 {
@@ -233,7 +237,7 @@ template hasDynamicRows(T)
 
 
 /**
-列のサイズが動的に変化する
+列の大きさが動的な行列型かどうか判定します
 */
 template hasDynamicColumns(T)
 {
@@ -244,7 +248,7 @@ template hasDynamicColumns(T)
 
 
 /**
-サイズが動的に変化する
+大きさが動的なベクトル型かどうか判定します
 */
 template hasDynamicLength(T)
 {
@@ -255,7 +259,7 @@ template hasDynamicLength(T)
 
 
 /**
-
+大きさが推論される行列が、推論結果を返す際の結果の型です。
 */
 struct InferredResult
 {
@@ -266,7 +270,7 @@ struct InferredResult
 
 
 /**
-サイズが推論可能
+大きさが推論される行列かどうか判定します
 */
 template isInferableMatrix(T)
 {
@@ -291,7 +295,7 @@ template isInferableMatrix(T)
 
 
 /**
-ベクトル型かどうか判定します。
+ベクトル型かどうか判定します
 */
 template isVector(V)
 {
@@ -330,17 +334,14 @@ unittest{
 
 
 /**
-行列型の要素の型を取得します。
-
-Example:
----
-static assert(is(ElementType!(NMatrix2S!int) == int));
----
+行列型の要素の型を取得します
 */
 template ElementType(A) if(isMatrix!A)
 {
     alias typeof(A.init[0, 0]) ElementType;
 }
+
+///
 unittest{
     static struct S
     {
@@ -358,12 +359,7 @@ unittest{
 
 
 /**
-その行列の要素がstd.algorithm.swapを呼べるかどうかをチェックします。
-
-Example:
----
-static assert(hasLvalueElements!(Matrix3i));
----
+その行列の要素がstd.algorithm.swapを呼べるかどうかをチェックします
 */
 template hasLvalueElements(A)if(isMatrix!A)
 {
@@ -374,6 +370,8 @@ template hasLvalueElements(A)if(isMatrix!A)
             swap(a[0, 0], a[0, 0]);
         }));
 }
+
+///
 unittest{
     static struct M
     {
@@ -393,11 +391,6 @@ unittest{
 
 /**
 A型の行列の要素にElementType!A型の値が代入可能かどうかをチェックします。
-
-Example:
----
-static assert(hasAssignableElements!(Matrix3i));
----
 */
 template hasAssignableElements(A)if(isMatrix!A)
 {
@@ -426,21 +419,15 @@ unittest{
 
 
 /**
-2つの行列が演算可能かどうかを判定するのに使います。
 aとbが等しいか、もしくはどちらかが0であるとtrueとなります。
-
-Example:
----
-static assert(isEqOrEitherEq0(0, 0));
-static assert(isEqOrEitherEq0(1, 1));
-static assert(isEqOrEitherEq0(0, 1));
-static assert(isEqOrEitherEq0(1, 0));
----
+2つの行列が演算可能かどうかを判定するのに使います。
 */
 private bool isEqOrEitherEq0(alias pred = "a == b", T)(T a, T b)
 {
     return binaryFun!pred(a, b) || a == 0 || b == 0;
 }
+
+///
 unittest{
     static assert(isEqOrEitherEq0(0, 0));
     static assert(isEqOrEitherEq0(1, 1));
@@ -451,7 +438,69 @@ unittest{
 
 
 /**
+正しい演算かどうか判定します
 
+Example:
+----
+static struct S(T, size_t r, size_t c){enum rows = r; enum cols = c; T opIndex(size_t i, size_t j) const {return T.init;}}
+alias Static1x1 = S!(int, 1, 1);
+alias Static1x2 = S!(int, 1, 2);
+alias Static2x1 = S!(int, 2, 1);
+alias Static2x2 = S!(int, 2, 2);
+
+static struct D(T){size_t rows = 1, cols = 1; T opIndex(size_t i, size_t j) const {return T.init;}}
+alias Dynamic = D!(int);
+
+static struct I(T){
+    enum rows = 0, cols = 0;
+    T opIndex(size_t i, size_t j) const { return T.init; }
+    static InferredResult inferSize(size_t rs, size_t cs){
+        if(rs == 0 && cs == 0)
+            return InferredResult(false, 0, 0);
+        else if(rs == 0 || cs == 0)
+            return InferredResult(true, max(rs, cs), max(rs, cs));
+        else
+            return InferredResult(true, rs, cs);
+    }
+}
+alias Inferable = I!int;
+static assert(Inferable.inferSize(1, 0).isValid);
+
+alias T = Inferable;
+static assert(T.rows == wild);
+static assert(T.cols == wild);
+
+
+static assert( isValidOperator!(Static1x1, "+", Static1x1));
+static assert(!isValidOperator!(Static1x1, "+", Static1x2));
+static assert( isValidOperator!(Static1x2, "+", Static1x2));
+static assert(!isValidOperator!(Static1x2, "+", Static1x1));
+
+static assert( isValidOperator!(Static1x1, "+", Dynamic));
+static assert( isValidOperator!(Static1x2, "+", Dynamic));
+static assert( isValidOperator!(Dynamic, "+", Static1x1));
+static assert( isValidOperator!(Dynamic, "+", Static1x2));
+
+static assert( isValidOperator!(Static1x1, "+", Inferable));
+static assert( isValidOperator!(Static1x2, "+", Inferable));
+static assert( isValidOperator!(Inferable, "+", Static1x1));
+static assert( isValidOperator!(Inferable, "+", Static1x2));
+
+static assert( isValidOperator!(Static1x1, "*", Static1x1));
+static assert( isValidOperator!(Static1x1, "*", Static1x2));
+static assert(!isValidOperator!(Static1x2, "*", Static1x2));
+static assert(!isValidOperator!(Static1x2, "*", Static1x1));
+
+static assert( isValidOperator!(Static1x1, "*", Dynamic));
+static assert( isValidOperator!(Static1x2, "*", Dynamic));
+static assert( isValidOperator!(Dynamic, "*", Static1x1));
+static assert( isValidOperator!(Dynamic, "*", Static1x2));
+
+static assert( isValidOperator!(Static1x1, "*", Inferable));
+static assert( isValidOperator!(Static1x2, "*", Inferable));
+static assert( isValidOperator!(Inferable, "*", Static1x1));
+static assert( isValidOperator!(Inferable, "*", Static1x2));
+----
 */
 template isValidOperator(L, string op, R)
 {
@@ -633,7 +682,7 @@ unittest{
 
 
 /**
-Expression Template Operator Species : 式テンプレート演算子の種類
+式テンプレート演算子の種類
 */
 enum ETOSpec : size_t
 {
@@ -663,16 +712,7 @@ enum ETOSpec : size_t
 
 
 /**
-式テンプレートでの演算子の種類を返します。
-
-Example:
----
-static assert(ETOperatorSpec!(Matrix2i, "+", Matrix2i) == ETOSpec.matrixAddMatrix);
-static assert(ETOperatorSpec!(Matrix2i, "-", Matrix2i) == ETOSpec.matrixSubMatrix);
-static assert(ETOperatorSpec!(Matrix2i, "*", Matrix2i) == ETOSpec.matrixMulMatrix);
-static assert(ETOperatorSpec!(Matrix2i, "*", int) == ETOSpec.matrixMulScalar);
-static assert(ETOperatorSpec!(int, "*", Matrix1x2i) == ETOSpec.scalarMulMatrix);
----
+式テンプレートでの演算子の種類を返します
 */
 template ETOperatorSpec(A, string op, B)
 if(isValidOperator!(A, op, B))
@@ -692,6 +732,8 @@ if(isValidOperator!(A, op, B))
                                                              : (op == "*" ? ETOSpec.matrixMulScalar
                                                                           : ETOSpec.matrixDivScalar));
 }
+
+///
 unittest{
     static struct S(T, size_t r, size_t c){enum rows = r; enum cols = c; T opIndex(size_t i, size_t j) const {return T.init;}}
     alias Matrix2i = S!(int, 2, 2);
@@ -705,7 +747,7 @@ unittest{
 
 
 /**
-
+式テンプレートでの、式を表します
 */
 struct MatrixExpression(Lhs, string s, Rhs)
 if(isValidOperator!(Lhs, s, Rhs) && (isInferableMatrix!Lhs && isInferableMatrix!Rhs) || (isInferableMatrix!Lhs && !isMatrix!Rhs) || (!isMatrix!Lhs && isInferableMatrix!Rhs))
@@ -762,6 +804,7 @@ if(isValidOperator!(Lhs, s, Rhs) && (isInferableMatrix!Lhs && isInferableMatrix!
 }
 
 
+/// ditto
 struct MatrixExpression(Lhs, string s, Rhs)
 if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatrix!Rhs) || (isInferableMatrix!Lhs && !isMatrix!Rhs) || (!isMatrix!Lhs && isInferableMatrix!Rhs)))
 {
@@ -963,9 +1006,7 @@ if(isValidOperator!(Lhs, s, Rhs) && !((isInferableMatrix!Lhs && isInferableMatri
 }
 
 
-/**
-行列に関する演算子の式
-*/
+/// ditto
 auto matrixExpression(string s, A, B)(auto ref A a, auto ref B b)
 if(isValidOperator!(A, s, B))
 {
@@ -975,23 +1016,8 @@ if(isValidOperator!(A, s, B))
 
 
 /**
-specにいれた種類の演算子をオーバーロードします。
-
-Example:
----
-struct Identity(T){
-    enum rows = wild;
-    enum cols = wild;
-
-    T opIndex(size_t i, size_t j){
-        return i == j ? cast(T)0 : cast(T)1;
-    }
-
-    mixin ExpressionTemplateOperators!(ETOSpec.all, wild, wild);
-}
----
+specに示された演算子をオーバーロードします。specはETOSpecで指定する必要があります。
 */
-
 template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 {
     enum stringMixin = 
@@ -1472,7 +1498,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
 }
 
 
-//inferable matrixのため
+/// ditto
 template ExpressionOperatorsInferable(size_t spec)
 {
     enum stringMixin = 
@@ -1713,7 +1739,7 @@ template ExpressionOperatorsInferable(size_t spec)
 
 
 /**
-
+全ての演算子をオーバーロードします。
 */
 template defaultExprOps(bool isInferable = false)
 {
@@ -1976,6 +2002,8 @@ if(isInferableMatrix!A && A.inferSize(rs, cs).isValid)
 
     return Result!()(mat);
 }
+
+///
 unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
@@ -2019,6 +2047,7 @@ unittest{
 }
 
 
+/// ditto
 auto congeal(A)(auto ref A mat, size_t r, size_t c)
 if(isInferableMatrix!A)
 in{
@@ -2061,6 +2090,9 @@ body{
 
     return Result!()(r, c, mat);
 }
+
+
+///
 unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
@@ -2151,6 +2183,9 @@ body{
 
     return Result!()(mat);
 }
+
+
+/// ditto
 unittest{
     scope(failure) {writefln("Unittest failure :%s(%s)", __FILE__, __LINE__); stdout.flush();}
     scope(success) {writefln("Unittest success :%s(%s)", __FILE__, __LINE__); stdout.flush();}
@@ -2179,6 +2214,7 @@ unittest{
 }
 
 
+///
 auto matrix(size_t rs, size_t cs, alias f, S...)(S sizes)
 if(is(typeof(f(0, 0))) && S.length == ((rs == 0) + (cs == 0)) && (S.length == 0 || is(CommonType!S : size_t)))
 {
