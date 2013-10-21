@@ -1161,7 +1161,7 @@ template ExpressionOperators(size_t spec, size_t rs, size_t cs)
     format(`#line %s "%s"`, __LINE__+2, __FILE__) ~
     q{
         void opAssign(M)(M m)
-        if(isMatrix!M && is(typeof(this[0, 0] = m[0, 0])))
+        if(isMatrix!M && is(typeof(this[0, 0] = m[0, 0])) && isValidOperator!(typeof(this), "+", M))
         in{
             static if(isInferableMatrix!M)
                 assert(m.inferSize(this.rows, this.cols).isValid);
