@@ -274,7 +274,7 @@ struct InferredResult
 */
 template isInferableMatrix(T)
 {
-    enum bool isInferableMatrix = isMatrix!T && is(typeof({
+    enum bool isInferableMatrix = isMatrix!T && is(typeof((T t){
             static assert(T.rows == wild);
             static assert(T.cols == wild);
 
@@ -300,7 +300,7 @@ template isInferableMatrix(T)
 template isVector(V)
 {
     enum isVector = isMatrix!V && !isInferableMatrix!V
-                 && is(typeof((V v){
+                 && is(typeof((const V v){
                         static if(hasStaticRows!V)
                         {
                             static if(hasStaticColumns!V)
@@ -363,10 +363,9 @@ unittest{
 */
 template hasLvalueElements(A)if(isMatrix!A)
 {
-    enum hasLvalueElements = is(typeof({
+    enum hasLvalueElements = is(typeof((A a){
             import std.algorithm : swap;
 
-            A a;
             swap(a[0, 0], a[0, 0]);
         }));
 }
@@ -394,9 +393,8 @@ A型の行列の要素にElementType!A型の値が代入可能かどうかをチ
 */
 template hasAssignableElements(A)if(isMatrix!A)
 {
-    enum hasAssignableElements = is(typeof({
+    enum hasAssignableElements = is(typeof((A a){
             ElementType!A e;
-            A a;
             a[0, 0] = e;
         }));
 }
