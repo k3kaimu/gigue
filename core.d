@@ -4205,7 +4205,7 @@ unittest{
 /**
 ベクトル同士のクロス積
 */
-auto cross(Major mjr = Major.row, V1, V2)(V1 vec1, V2 vec2)
+auto cross(Major mjr = Major.column, V1, V2)(V1 vec1, V2 vec2)
 if(isVector!V1 && isVector!V2 && (hasStaticLength!V1 && is(typeof({static assert(V1.length == 3);})))
                               && (hasStaticLength!V2 && is(typeof({static assert(V2.length == 3);}))))
 in{
