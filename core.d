@@ -2790,9 +2790,11 @@ if(rs != 0 && cs != 0)
 
 
     @property
-    auto reference()
+    auto reference() inout pure nothrow @safe
     {
-        return matrix!(rows, cols)(_array[]);
+        //Issue: 9983 http://d.puremagic.com/issues/show_bug.cgi?id=9983
+        //return matrix!(rows, cols)(_array[]);
+        return _referenceImpl(this);
     }
 
 
@@ -2805,6 +2807,36 @@ if(rs != 0 && cs != 0)
 
   static:
     T[rs * cs] _buffer;
+
+
+    // Workaround of issue 9983 http://d.puremagic.com/issues/show_bug.cgi?id=9983
+    auto _referenceImpl(M)(ref M m) @trusted pure nothrow
+    {
+        static if(is(Q == immutable(Q)))
+            return _referenceImplImmutable(cast(immutable(T)[])m._array[]);
+        else static if(is(Q == const(Q)))
+            return _referenceImplConst(cast(const(T)[])m._array[]);
+        else
+            return _referenceImplMutable(cast(T[])m._array[]);
+    }
+
+
+    auto _referenceImplMutable(E)(E[] arr)
+    {
+        return arr.matrix!(rows, cols);
+    }
+
+
+    auto _referenceImplConst(E)(const E[] arr)
+    {
+        return arr.matrix!(rows, cols);
+    }
+
+
+    auto _referenceImplImmutable(E)(immutable E[] arr)
+    {
+        return arr.matrix!(rows, cols);
+    }
 }
 
 unittest{
