@@ -67,16 +67,14 @@ enum size_t wild = 0;       /// inferableMatrix
 */
 template isScalar(T){
     enum bool isScalar = is(typeof(
-        {
-            T* a;
-
-            {auto _t1 = *a + *a;}
-            {auto _t1 = *a - *a;}
-            {auto _t1 = *a * *a;}
-            {auto _t1 = *a / *a;}
+        (T a){
+            {auto _t1 = a + a;}
+            {auto _t1 = a - a;}
+            {auto _t1 = a * a;}
+            {auto _t1 = a / a;}
 
             //bool b = a < 0;
-            bool b = *a == *a;
+            bool b = a == a;
         }));
 }
 
