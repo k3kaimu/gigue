@@ -7,8 +7,6 @@ import std.format,
        std.math,
        std.traits;
 
-debug = Quaternion;
-
 
 /**
 四元数
@@ -17,6 +15,7 @@ Quaternion!(CommonType!(A, B, C, D)) quaternion(A, B, C, D)(A a, B b, C c, D d) 
 if(is(Quaternion!(CommonType!(A, B, C, D))))
 {
     typeof(return) dst;
+
     dst.a = a;
     dst.b = b;
     dst.c = c;
@@ -31,6 +30,7 @@ Quaternion!A quaternion(A)(A a) pure nothrow @safe
 if(is(Quaternion!A))
 {
     typeof(return) dst;
+
     dst.a = a;
 
     return dst;
@@ -42,6 +42,7 @@ Quaternion!(CommonType!(R, ElementType!V)) quaternion(R, V)(R r, V v)
 if(is(Quaternion!(CommonType!(R, ElementType!V))))
 {
     typeof(return) dst;
+
     dst.s = r;
     dst.v = v;
 
@@ -68,14 +69,14 @@ body{
 struct Quaternion(S)
 if(isScalar!S)
 {
-    this(E)(Quaternion!E q)
+    this(E)(in Quaternion!E q)
     if(is(E : S))
     {
         this = q;
     }
 
 
-    this()(SCVector!(int, 4) m)
+    this()(in SCVector!(int, 4) m)
     {
         this._vec4 = m;
     }
@@ -110,7 +111,7 @@ if(isScalar!S)
     }
 
 
-    void v(V)(V v) @property
+    void v(V)(in V v) @property
     {
         foreach(i; 0 .. 3)
             this._vec4[i+1] = v[i];
@@ -234,14 +235,14 @@ if(isScalar!S)
     }
 
 
-    void opOpAssign(string op, E)(Quaternion!E q)
+    void opOpAssign(string op, E)(in Quaternion!E q)
     if(!is(CommonType!(S, E) == void))
     {
         this = mixin("this " ~ op ~ " q");
     }
 
 
-    void opOpAssign(string op, E)(E s)
+    void opOpAssign(string op, E)(in E s)
     if(is(E : S))
     {
         this = mixin("this " ~ op ~ " s");
@@ -392,7 +393,7 @@ unittest {
 /**
 四元数の絶対値を返します
 */
-auto abs(E)(Quaternion!E q)
+auto abs(E)(in Quaternion!E q)
 {
   static if(isFloatingPoint!E)
     return sqrt(q.a ^^ 2 + q.b ^^ 2 + q.c ^^ 2 + q.d ^^ 2);
@@ -404,7 +405,7 @@ auto abs(E)(Quaternion!E q)
 /**
 四元数の共役を返します
 */
-Quaternion!E conj(E)(const Quaternion!E q) pure nothrow @safe
+Quaternion!E conj(E)(in Quaternion!E q) pure nothrow @safe
 {
     typeof(return) dst;
     dst.s = q.s;
@@ -416,7 +417,7 @@ Quaternion!E conj(E)(const Quaternion!E q) pure nothrow @safe
 /**
 approxEqualの四元数バージョン
 */
-bool approxEqual(alias pred = std.math.approxEqual, Q1, Q2)(Q1 q1, Q2 q2)
+bool approxEqual(alias pred = std.math.approxEqual, E1, E2)(in Quaternion!E1 q1, in Quaternion!E2 q2)
 {
     foreach(i; 0 .. 4)
         if(!binaryFun!pred(q1[i], q2[i]))
