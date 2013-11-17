@@ -48,6 +48,22 @@ import std.algorithm,
 version(unittest) import std.stdio;
 
 
+bool isReleaseCompile() pure nothrow @safe @property
+{
+    void f()in{throw new Exception("");}body{}
+
+    try
+        f();
+    catch(Exception)
+        return false;
+
+    return true;
+}
+
+static if(isReleaseCompile)
+    version = Release;
+
+
 /**
 デフォルトでの行列が列優先か行優先のどちらでメモリ上に配置されるかをDlinearColumnMajorという
 */
@@ -1938,12 +1954,12 @@ unittest{
     assert(addsdr == addsd);
     assert(addsdr == addsd);
 
-    assert(collectException!AssertError(D(2, 3) + a));
-    assert(collectException!AssertError(D(2, 3) + i));
+    version(Release){}else assert(collectException!AssertError(D(2, 3) + a));
+    version(Release){}else assert(collectException!AssertError(D(2, 3) + i));
     assert(D(2, 3) * i == D(2, 3));
 
-    assert(collectException!AssertError(D(2, 3) + D(2, 2)));
-    assert(collectException!AssertError(D(2, 3) + D(3, 3)));
+    version(Release){}else assert(collectException!AssertError(D(2, 3) + D(2, 2)));
+    version(Release){}else assert(collectException!AssertError(D(2, 3) + D(3, 3)));
     assert((D(2, 3) + D(2, 3)).rows == 2);
     assert((D(2, 3) + D(2, 3)).cols == 3);
     assert((D(2, 3) * D(3, 4)).rows == 2);
