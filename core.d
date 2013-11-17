@@ -85,8 +85,7 @@ unittest{
     alias TT = TypeTuple!(ubyte, ushort, uint, ulong,
                            byte,  short,  int,  long,
                           float, double, real,
-                          creal, cfloat, cdouble/*,*/
-                          /*BigInt*/);
+                          creal, cfloat, cdouble);
 
     foreach(T; TT)
     {
@@ -96,8 +95,7 @@ unittest{
     }
 
     static assert(isScalar!BigInt);
-
-    static assert(!isScalar!(CustomFloat!16));
+    // static assert(isScalar!(CustomFloat!16)); In dmd2.064, isScalar!(CustomFloat!16) is true.
 }
 
 
